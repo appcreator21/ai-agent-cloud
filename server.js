@@ -12,6 +12,7 @@ const crypto = require('node:crypto');
 const { spawn, execFile } = require('node:child_process');
 const { adapters, parseLine, hintFor } = require('./lib/agents');
 const team = require('./lib/team');
+const gh = require('./lib/github');
 
 const PORT = Number(process.env.PORT || 4317);
 const HOST = '127.0.0.1';
@@ -106,8 +107,9 @@ async function repoInfo(dir) {
     git(root, 'status', '--porcelain'),
     git(root, 'rev-parse', '--verify', 'HEAD'),
   ]);
+  const remote = await git(root, 'remote', 'get-url', 'origin');
   return {
-    path: root, exists: true, git: true, hasCommits: head.ok,
+    path: root, exists: true, git: true, hasCommits: head.ok, remote: remote.ok ? remote.stdout.trim() : null,
     branch: branch.stdout.trim(), dirty: dirty.stdout.trim().split('\n').filter(Boolean).length,
   };
 }
@@ -326,7 +328,7 @@ async function createTask(body) {
   if (!repo.hasCommits) throw httpErr(400, 'Repository needs at least one commit');
   const isTeam = body.kind === 'team';
   const task = {
-    id: newId(), prompt, repo: repo.path, mode: isTeam || body.mode !== 'review' ? 'build' : 'review',
+    id: newId(), prompt, repo: repo.path, remote: repo.remote, mode: isTeam || body.mode !== 'review' ? 'build' : 'review',
     models: body.models || {}, createdAt: Date.now(), baseBranch: repo.branch,
     runs: agents.map((agent) => ({ agent, status: 'queued', items: [], cursor: 0 })),
   };
@@ -355,13 +357,32 @@ async function diffOf(run) {
   return { diff: diff.stdout.slice(0, 2_000_000), stat: stat.stdout };
 }
 
-async function applyRun(task, run) {
-  if (!run.dir) throw httpErr(400, 'Nothing to apply');
+async function commitRun(task, run) {
+  if (!run.dir) throw httpErr(400, 'Nothing to commit');
   await git(run.dir, 'add', '-A', '--', '.', team.EXCLUDE);
   const who = task.team ? 'Duo team' : adapters[run.agent].label;
   const c = await git(run.dir, '-c', 'user.name=Duo', '-c', 'user.email=duo@localhost',
     'commit', '-m', `${who}: ${task.prompt.split('\n')[0].slice(0, 70)}`);
   if (!c.ok && !/nothing to commit/.test(c.stdout + c.stderr)) throw httpErr(500, c.stderr || c.stdout);
+}
+
+async function prRun(task, run) {
+  await commitRun(task, run);
+  const who = task.team ? 'Claude Code and Codex (team)' : adapters[run.agent].label;
+  const files = (await git(run.dir, 'diff', '--stat', `${task.baseBranch}...HEAD`)).stdout.trim();
+  const { url } = await gh.openPullRequest({
+    repoRoot: run.repoRoot, branch: run.branch, base: task.baseBranch,
+    title: task.prompt.split('\n')[0],
+    body: `${task.prompt}\n\n---\nWritten by ${who} using Duo.\n\n\`\`\`\n${files}\n\`\`\``,
+  });
+  if (task.team) { task.team.prUrl = url; broadcast({ type: 'team', taskId: task.id, team: { prUrl: url } }); }
+  else { run.prUrl = url; broadcast({ type: 'status', taskId: task.id, agent: run.agent, status: run.status, extra: { prUrl: url } }); }
+  save();
+  return url;
+}
+
+async function applyRun(task, run) {
+  await commitRun(task, run);
   const m = await serial(() => git(run.repoRoot, 'merge', '--no-ff', '--no-edit', run.branch));
   if (!m.ok) {
     await git(run.repoRoot, 'merge', '--abort');
@@ -456,13 +477,25 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'GET' && p === '/api/status') {
       const [claude, codex] = await Promise.all([authStatus('claude'), authStatus('codex')]);
-      return json(res, 200, { claude, codex, strippedEnv: leakedKeys(), cwd: process.cwd(), home: os.homedir() });
+      const github = await gh.status();
+      return json(res, 200, { claude, codex, github, strippedEnv: leakedKeys(), cwd: process.cwd(), home: os.homedir() });
+    }
+    let m;
+    if (req.method === 'GET' && p === '/api/github') return json(res, 200, { ...(await gh.status()), login: gh.loginState(), defaultDir: gh.DEFAULT_DIR() });
+    if (req.method === 'POST' && p === '/api/github/login') { gh.forget(); return json(res, 200, gh.startLogin()); }
+    if (req.method === 'GET' && p === '/api/github/repos') return json(res, 200, await gh.listRepos(url.searchParams.get('dir')));
+    if (req.method === 'POST' && p === '/api/projects/clone') { const b = await readBody(req); return json(res, 200, await gh.cloneRepo(b.repo, b.dir)); }
+    if (req.method === 'POST' && p === '/api/projects/create') return json(res, 200, await gh.createProject(await readBody(req)));
+    if (req.method === 'POST' && (m = p.match(/^\/api\/tasks\/([a-f0-9]+)\/push$/))) {
+      const task = tasks.get(m[1]);
+      if (!task) throw httpErr(404, 'Not found');
+      await gh.pushBranch(task.runs[0].repoRoot, task.baseBranch);
+      return json(res, 200, { ok: true });
     }
     if (req.method === 'GET' && p === '/api/repo') return json(res, 200, await repoInfo(url.searchParams.get('path')));
     if (req.method === 'GET' && p === '/api/tasks') return json(res, 200, [...tasks.values()].sort((a, b) => b.createdAt - a.createdAt));
     if (req.method === 'POST' && p === '/api/tasks') return json(res, 200, await createTask(await readBody(req)));
 
-    let m;
     if (req.method === 'POST' && (m = p.match(/^\/api\/login\/(claude|codex)$/))) {
       // Opens the CLI's own browser sign-in flow on this machine.
       const a = adapters[m[1]];
@@ -487,13 +520,14 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true });
     }
 
-    if ((m = p.match(/^\/api\/tasks\/([a-f0-9]+)\/(claude|codex|team)\/(diff|apply|cancel|discard)$/))) {
+    if ((m = p.match(/^\/api\/tasks\/([a-f0-9]+)\/(claude|codex|team)\/(diff|apply|cancel|discard|pr)$/))) {
       if (m[2] === 'team') {
         const task = tasks.get(m[1]);
         if (!task || !task.team) throw httpErr(404, 'Not found');
         if (m[3] === 'diff' && req.method === 'GET') return json(res, 200, task.team.discarded ? { diff: '', stat: '' } : await diffOf(task.runs[0]));
         if (req.method !== 'POST') throw httpErr(405, 'Method not allowed');
         if (m[3] === 'apply') { await applyRun(task, task.runs[0]); return json(res, 200, { ok: true }); }
+        if (m[3] === 'pr') return json(res, 200, { url: await prRun(task, task.runs[0]) });
         if (m[3] === 'discard') { await discardTeam(task); return json(res, 200, { ok: true }); }
         throw httpErr(404, 'Not found');
       }
@@ -506,6 +540,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, { ok: true });
       }
       if (m[3] === 'apply') { await applyRun(task, r); return json(res, 200, { ok: true }); }
+      if (m[3] === 'pr') return json(res, 200, { url: await prRun(task, r) });
       if (m[3] === 'discard') { await discardRun(task, r); return json(res, 200, { ok: true }); }
     }
 

@@ -30,6 +30,15 @@ and a shared goal. Both work in **one shared worktree** and talk through a chann
 
 Modes (Compete): **Build** (agents may edit and run commands in their worktree) and **Plan** (read-only).
 
+## GitHub
+
+Duo uses the GitHub CLI (`gh`) so it never handles a token. Install it once (`brew install gh`), then:
+
+- **Connect:** click Connect in the sidebar. A browser tab opens and Duo shows a one-time code to enter there.
+- **Projects** (button next to the repo field): reopen a recent project, **clone any of your GitHub repos** and use it, or **create a new project** (locally, or on GitHub as private/public, with a first commit so agents can branch from it).
+- **Open PR:** pushes an agent's (or the team's) branch and opens a pull request, without touching your local main.
+- **Push to GitHub:** after **Apply**, pushes the merged branch.
+
 ## Also
 
 - **Command palette** (Ctrl/Cmd+K): new task, switch mode, sign in/out, jump to any task. Up/Down in an empty prompt recalls earlier prompts.

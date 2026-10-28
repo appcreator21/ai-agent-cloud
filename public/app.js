@@ -23,10 +23,11 @@ async function api(path, opts = {}) {
   if (!r.ok) throw new Error(j.error || r.statusText);
   return j;
 }
-function toast(msg, err) {
+function toast(msg, err, href) {
   const t = document.createElement('div');
   t.className = 'toast' + (err ? ' err' : '');
   t.textContent = msg;
+  if (href) { const a = document.createElement('a'); a.href = href; a.target = '_blank'; a.rel = 'noopener'; a.textContent = ' Open'; t.append(a); }
   $('#toasts').append(t);
   setTimeout(() => t.remove(), err ? 7000 : 3500);
 }
@@ -73,6 +74,18 @@ async function loadStatus() {
     if (s.warning) el.insertAdjacentHTML('beforeend', `<div class="warnline">${esc(s.warning)}</div>`);
     box.append(el);
   }
+  const g = state.status.github || {};
+  const gc = document.createElement('div');
+  gc.className = `acct github ${g.loggedIn ? 'ok' : ''}`;
+  const gsub = !g.installed ? 'GitHub CLI not found' : g.loggedIn ? `@${g.user}` : 'Not connected';
+  gc.innerHTML = `<span class="dot"></span><div style="min-width:0"><div class="name"><b>GitHub</b></div><div class="sub" title="${esc(gsub)}">${esc(gsub)}</div></div>`;
+  const gb = document.createElement('button');
+  gb.className = 'mini' + (g.loggedIn ? '' : ' primary');
+  gb.textContent = g.loggedIn ? 'Projects' : g.installed ? 'Connect' : 'Install';
+  gb.onclick = () => { if (g.loggedIn) openProj('github'); else if (g.installed) connectGithub(); else githubInstallHelp(); };
+  gc.append(gb);
+  if (!g.installed) gc.insertAdjacentHTML('beforeend', '<div class="warnline" style="color:var(--muted)">Run <code>brew install gh</code> (Mac) in a terminal, then reload.</div>');
+  box.append(gc);
   const stripped = Object.values(state.status.strippedEnv).flat();
   box.insertAdjacentHTML('beforeend', `<div class="guard"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0l6 2v5c0 4-2.6 7-6 9-3.4-2-6-5-6-9V2z"/></svg><span>Subscription billing guard: API key variables are removed from agent processes${stripped.length ? ` (found ${stripped.join(', ')}, ignored)` : ''}.</span></div>`);
   const dis = !state.status.claude.loggedIn && !state.status.codex.loggedIn;
@@ -226,9 +239,11 @@ function syncHead(t, r, el = laneEl(t, r)) {
     foot.insertAdjacentHTML('beforeend', '<span class="note">Discarded</span>');
   } else if (r.applied) {
     foot.insertAdjacentHTML('beforeend', `<span class="note">Merged into ${esc(t.baseBranch)}</span>`);
+    if (canGh(t)) add('Push to GitHub', 'primary', () => doPush(t));
   } else {
     foot.insertAdjacentHTML('beforeend', `<span class="note">${r.changed ? `${r.changed} file${r.changed > 1 ? 's' : ''} changed` : 'No file changes'} on <code>${esc(r.branch || '')}</code></span>`);
     add('Discard', 'danger', async () => { await api(`/api/tasks/${t.id}/${r.agent}/discard`, { method: 'POST' }).catch((e) => toast(e.message, true)); });
+    if (canGh(t)) add(r.prUrl ? 'View PR' : 'Open PR', '', () => (r.prUrl ? window.open(r.prUrl, '_blank', 'noopener') : doPr(t, r.agent, AGENTS[r.agent].label)), !r.changed && !r.prUrl);
     add(`Apply to ${t.baseBranch}`, 'primary', async () => {
       try { await api(`/api/tasks/${t.id}/${r.agent}/apply`, { method: 'POST' }); toast(`${AGENTS[r.agent].label} changes merged into ${t.baseBranch}.`); }
       catch (e) { toast(e.message, true); }
@@ -375,10 +390,11 @@ function syncChanFoot(t, el = chanEl(t)) {
   const add = (txt, cls, fn, dis) => { const b = document.createElement('button'); b.className = `btn ${cls || ''}`; b.textContent = txt; b.disabled = !!dis; b.onclick = fn; foot.append(b); };
   const note = (h) => foot.insertAdjacentHTML('beforeend', `<span class="note">${h}</span>`);
   if (t.team.discarded) return note('Discarded');
-  if (t.team.applied) return note(`Merged into ${esc(t.baseBranch)}`);
+  if (t.team.applied) { note(`Merged into ${esc(t.baseBranch)}`); if (canGh(t)) add('Push to GitHub', 'primary', () => doPush(t)); return; }
   if (running) return note('Agents are working...');
   note(`${t.team.changed ? `${t.team.changed} file${t.team.changed > 1 ? 's' : ''} changed` : 'No file changes'} on <code>${esc(t.team.branch)}</code>`);
   add('Discard', 'danger', () => api(`/api/tasks/${t.id}/team/discard`, { method: 'POST' }).catch((e) => toast(e.message, true)));
+  if (canGh(t)) add(t.team.prUrl ? 'View PR' : 'Open PR', '', () => (t.team.prUrl ? window.open(t.team.prUrl, '_blank', 'noopener') : doPr(t, 'team', 'the team')), !t.team.changed && !t.team.prUrl);
   add(`Apply to ${t.baseBranch}`, 'primary', async () => {
     try { await api(`/api/tasks/${t.id}/team/apply`, { method: 'POST' }); toast(`Team changes merged into ${t.baseBranch}.`); }
     catch (e) { toast(e.message, true); }
@@ -449,6 +465,121 @@ function addItem(feed, it, scroll = true) {
   feed.append(el);
   if (scroll && near) feed.scrollTop = feed.scrollHeight;
 }
+
+// ---------- GitHub: connect, pick / clone / create projects, PRs ----------
+function githubInstallHelp() {
+  toast('Install the GitHub CLI: run "brew install gh" in a terminal (https://cli.github.com), then reload this page.', true);
+}
+async function connectGithub() {
+  let st;
+  try { st = await api('/api/github/login', { method: 'POST' }); } catch (e) { return toast(e.message, true); }
+  const m = document.createElement('div');
+  m.className = 'palette'; m.id = 'ghModal';
+  m.innerHTML = `<div class="pal-box gh-box" role="dialog" aria-label="Connect GitHub">
+    <h3>Connect GitHub</h3>
+    <p>A browser tab is opening on this computer. Enter this code there to let Duo create repos and open pull requests.</p>
+    <div class="code" id="ghCode">starting...</div>
+    <div class="gh-actions"><button class="btn" id="ghCopy" type="button">Copy code</button><a class="btn primary" href="https://github.com/login/device" target="_blank" rel="noopener">Open github.com/login/device</a></div>
+    <div class="gh-msg" id="ghMsg">Waiting for you to approve...</div><button class="mini gh-close" type="button">Cancel</button></div>`;
+  document.body.append(m);
+  const close = () => { clearInterval(iv); m.remove(); };
+  $('.gh-close', m).onclick = close;
+  m.addEventListener('mousedown', (e) => { if (e.target === m) close(); });
+  $('#ghCopy', m).onclick = () => navigator.clipboard?.writeText($('#ghCode', m).textContent);
+  const iv = setInterval(async () => {
+    const g = await api('/api/github').catch(() => null);
+    if (!g) return;
+    if (g.login?.code) $('#ghCode', m).textContent = g.login.code;
+    if (g.login?.error) { $('#ghMsg', m).textContent = g.login.error; $('#ghMsg', m).classList.add('bad'); clearInterval(iv); }
+    else if (g.login?.done && g.loggedIn) { close(); toast(`GitHub connected as @${g.user}`); loadStatus(); if (state.projOpen) openProj(state.projTab); }
+  }, 1200);
+}
+
+const canGh = (t) => !!t.remote && !!state.status?.github?.loggedIn;
+async function doPr(t, key, who) {
+  try {
+    toast(`Pushing ${who} and opening a pull request...`);
+    const { url } = await api(`/api/tasks/${t.id}/${key}/pr`, { method: 'POST' });
+    toast('Pull request opened.', false, url);
+    if (url) window.open(url, '_blank', 'noopener');
+  } catch (e) { toast(e.message, true); }
+}
+async function doPush(t) {
+  try { await api(`/api/tasks/${t.id}/push`, { method: 'POST' }); toast(`Pushed ${t.baseBranch} to GitHub.`); }
+  catch (e) { toast(e.message, true); }
+}
+
+function pickProject(dir) {
+  $('#repo').value = dir; store('repo', dir);
+  const recent = [dir, ...(store('repos') || []).filter((x) => x !== dir)].slice(0, 8); store('repos', recent); fillRecent();
+  checkRepo(); closeProj(); $('#prompt').focus();
+}
+function closeProj() { $('#proj').hidden = true; state.projOpen = false; }
+async function openProj(tab = 'recent') {
+  const box = $('#proj');
+  state.projOpen = true; state.projTab = tab;
+  box.hidden = false;
+  const g = await api('/api/github').catch(() => ({}));
+  const dir = store('projDir') || g.defaultDir || '';
+  const tabs = [['recent', 'Recent'], ['github', 'Your GitHub repos'], ['new', 'New project']];
+  box.innerHTML = `<div class="proj-head"><div class="proj-tabs">${tabs.map(([k, l]) => `<button type="button" class="ptab${k === tab ? ' on' : ''}" data-t="${k}">${l}</button>`).join('')}</div><button type="button" class="proj-x" aria-label="Close">×</button></div>
+    <div class="proj-body"></div>
+    <label class="proj-dir ${tab === 'recent' ? 'hide' : ''}"><span>Save to</span><input id="projDir" value="${esc(dir)}" spellcheck="false"></label>`;
+  box.querySelectorAll('.ptab').forEach((b) => (b.onclick = () => openProj(b.dataset.t)));
+  $('.proj-x', box).onclick = closeProj;
+  const body = $('.proj-body', box);
+  const dirVal = () => { const v = $('#projDir', box).value.trim(); store('projDir', v); return v; };
+  const needGh = (what) => `<div class="proj-empty"><p>${g.installed ? `Connect GitHub to ${what}.` : 'The GitHub CLI (gh) is not installed. Run <code>brew install gh</code> in a terminal, then reload.'}</p>${g.installed ? '<button type="button" class="btn primary" id="projConnect">Connect GitHub</button>' : ''}</div>`;
+
+  if (tab === 'recent') {
+    const rec = store('repos') || [];
+    body.innerHTML = rec.length ? rec.map((r) => `<button type="button" class="proj-item" data-p="${esc(r)}"><b>${esc(r.split('/').filter(Boolean).pop())}</b><span>${esc(r)}</span></button>`).join('') : '<div class="proj-empty"><p>No recent projects yet. Clone one from GitHub or create a new one.</p></div>';
+    body.querySelectorAll('.proj-item').forEach((b) => (b.onclick = () => pickProject(b.dataset.p)));
+  } else if (tab === 'github') {
+    if (!g.loggedIn) { body.innerHTML = needGh('see your repositories'); $('#projConnect')?.addEventListener('click', connectGithub); return; }
+    body.innerHTML = '<input class="proj-search" placeholder="Search your repositories..." aria-label="Search repositories"><div class="proj-list"><div class="proj-empty"><p>Loading...</p></div></div>';
+    let repos = [];
+    const list = $('.proj-list', body);
+    const draw = () => {
+      const q = $('.proj-search', body).value.toLowerCase();
+      const items = repos.filter((r) => r.nameWithOwner.toLowerCase().includes(q) || (r.description || '').toLowerCase().includes(q));
+      list.innerHTML = items.map((r) => `<div class="proj-item" data-r="${esc(r.nameWithOwner)}"><div><b>${esc(r.nameWithOwner)}</b>${r.isPrivate ? '<em>private</em>' : ''}<span>${esc(r.description || '')}</span></div><button type="button" class="mini ${r.local ? '' : 'primary'}">${r.local ? 'Use' : 'Clone & use'}</button></div>`).join('') || '<div class="proj-empty"><p>No matching repositories.</p></div>';
+      list.querySelectorAll('.proj-item').forEach((row) => ($('button', row).onclick = async (e) => {
+        const btn = e.currentTarget; const slug = row.dataset.r; const r = repos.find((x) => x.nameWithOwner === slug);
+        if (r.local) return pickProject(r.local);
+        btn.disabled = true; btn.textContent = 'Cloning...';
+        try { const out = await api('/api/projects/clone', { method: 'POST', body: { repo: slug, dir: dirVal() } }); toast(`Cloned ${slug}`); pickProject(out.path); }
+        catch (err) { toast(err.message, true); btn.disabled = false; btn.textContent = 'Clone & use'; }
+      }));
+    };
+    $('.proj-search', body).oninput = draw;
+    api('/api/github/repos?dir=' + encodeURIComponent(dir)).then((r) => { repos = r; draw(); }).catch((e) => { list.innerHTML = `<div class="proj-empty"><p>${esc(e.message)}</p></div>`; });
+  } else {
+    body.innerHTML = `<div class="proj-form">
+      <label>Name<input id="npName" placeholder="my-new-app" spellcheck="false" autocomplete="off"></label>
+      <label>Description <small>optional</small><input id="npDesc" placeholder="What is it?"></label>
+      <div class="proj-row"><div class="seg" id="npVis"><button type="button" class="on" data-v="private">Private</button><button type="button" data-v="public">Public</button></div>
+      <label class="chk"><input type="checkbox" id="npGh" ${g.loggedIn ? 'checked' : 'disabled'}> Create on GitHub</label></div>
+      ${g.loggedIn ? '' : '<p class="muted">Not connected to GitHub yet, so this will be a local project. <a href="#" id="projConnect">Connect GitHub</a></p>'}
+      <button type="button" class="btn primary" id="npGo">Create project</button></div>`;
+    let vis = 'private';
+    body.querySelectorAll('#npVis button').forEach((b) => (b.onclick = () => { vis = b.dataset.v; body.querySelectorAll('#npVis button').forEach((x) => x.classList.toggle('on', x === b)); }));
+    $('#projConnect')?.addEventListener('click', (e) => { e.preventDefault(); connectGithub(); });
+    const go = async () => {
+      const btn = $('#npGo', body); btn.disabled = true; btn.textContent = 'Creating...';
+      try {
+        const out = await api('/api/projects/create', { method: 'POST', body: { name: $('#npName', body).value, description: $('#npDesc', body).value, visibility: vis, github: $('#npGh', body).checked, dir: dirVal() } });
+        toast(out.github ? 'Created on GitHub.' : 'Created locally.', false, out.url); pickProject(out.path);
+      } catch (err) { toast(err.message, true); btn.disabled = false; btn.textContent = 'Create project'; }
+    };
+    $('#npGo', body).onclick = go;
+    $('#npName', body).addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
+    $('#npName', body).focus();
+  }
+}
+$('#projBtn').onclick = () => (state.projOpen ? closeProj() : openProj(state.status?.github?.loggedIn ? 'github' : 'recent'));
+document.addEventListener('mousedown', (e) => { if (state.projOpen && !e.target.closest('#proj, #projBtn, #ghModal')) closeProj(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && state.projOpen && !$('#palette')) closeProj(); });
 
 // ---------- attention: title, notification, connection ----------
 const BASE_TITLE = document.title;
@@ -560,6 +691,7 @@ async function checkRepo() {
     const r = await api('/api/repo?path=' + encodeURIComponent(v));
     badge.className = 'repo-badge ' + (r.git && r.hasCommits ? (r.dirty ? 'warn' : 'ok') : 'bad');
     badge.textContent = !r.exists ? 'not found' : !r.git ? 'not a git repo' : !r.hasCommits ? 'no commits' : r.dirty ? `${r.branch} - ${r.dirty} uncommitted` : r.branch;
+    if (r.remote && /github\.com/.test(r.remote)) badge.textContent += ' · GitHub';
     badge.title = r.dirty ? 'Uncommitted changes are not visible to the agents; they branch from the last commit.' : '';
     return r;
   } catch { return null; }

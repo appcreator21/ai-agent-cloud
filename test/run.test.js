@@ -39,7 +39,7 @@ before(async () => {
   freshRepo();
   server = spawn('node', ['server.js'], {
     cwd: ROOT, stdio: 'ignore',
-    env: { ...process.env, PORT: String(PORT), DUO_HOME: path.join(tmp, 'home'), DUO_CLAUDE_BIN: path.join(ROOT, 'test/fake/claude'), DUO_CODEX_BIN: path.join(ROOT, 'test/fake/codex'), DUO_MAX_TURNS: '4' },
+    env: { ...process.env, PORT: String(PORT), DUO_HOME: path.join(tmp, 'home'), DUO_CLAUDE_BIN: path.join(ROOT, 'test/fake/claude'), DUO_CODEX_BIN: path.join(ROOT, 'test/fake/codex'), DUO_MAX_TURNS: '4', DUO_GH_BIN: path.join(ROOT, 'test/fake/gh'), FAKE_GH_REMOTES: path.join(tmp, 'remotes'), DUO_PROJECTS: path.join(tmp, 'projects') },
   });
   await waitFor(() => fetch(BASE + '/api/status').then((r) => r.ok).catch(() => false), 8000, 'server');
 });
@@ -147,4 +147,51 @@ test('missing CLI gives a clear error', async () => {
     assert.equal(r.status, 400);
     assert.match((await r.json()).error, /not installed/);
   } finally { s.kill('SIGTERM'); }
+});
+
+test('github: status, device-code login, repo list', async () => {
+  const st = await get('/api/github');
+  assert.equal(st.loggedIn, true); assert.equal(st.user, 'matt');
+  const l = await (await post('/api/github/login')).json();
+  const code = await waitFor(async () => (await get('/api/github')).login?.code, 5000, 'device code');
+  assert.equal(code, 'ABCD-1234');
+  await waitFor(async () => (await get('/api/github')).login?.done, 5000, 'login done');
+  assert.equal((await get('/api/github')).login.error, null);
+  const repos = await get('/api/github/repos');
+  assert.deepEqual(repos.map((r) => r.nameWithOwner), ['matt/todo-app', 'matt/site']);
+  assert.equal(repos[0].local, null);
+});
+
+test('github: clone then reuse, and name validation', async () => {
+  const r = await (await post('/api/projects/clone', { repo: 'matt/todo-app' })).json();
+  assert.ok(fs.existsSync(path.join(r.path, '.git')) && r.existed === false);
+  assert.equal((await (await post('/api/projects/clone', { repo: 'matt/todo-app' })).json()).existed, true);
+  assert.equal((await get('/api/github/repos'))[0].local, r.path);
+  assert.equal((await post('/api/projects/clone', { repo: '../../etc/passwd' })).status, 400);
+  assert.equal((await post('/api/projects/create', { name: '../evil', github: false })).status, 400);
+  assert.equal((await post('/api/projects/create', { name: 'has space', github: false })).status, 400);
+});
+
+test('github: create a repo (local only, then on GitHub), open a PR, push', async () => {
+  const local = await (await post('/api/projects/create', { name: 'local-only', github: false })).json();
+  assert.equal((await get('/api/repo?path=' + encodeURIComponent(local.path))).remote, null);
+  assert.equal((await post('/api/tasks/zzz/team/pr')).status, 404);
+
+  const c = await (await post('/api/projects/create', { name: 'my-new-app', visibility: 'private', description: 'hello', github: true })).json();
+  assert.equal(c.github, true); assert.match(c.url, /github\.com\/matt\/my-new-app/);
+  const info = await get('/api/repo?path=' + encodeURIComponent(c.path));
+  assert.ok(info.remote && info.hasCommits && info.branch === 'main');
+  assert.equal((await post('/api/projects/create', { name: 'my-new-app', github: true })).status, 409);
+
+  const { id } = await (await post('/api/tasks', { prompt: 'add a greeting', repo: c.path, agents: ['claude'] })).json();
+  await waitFor(async () => idle(await taskById(id)), 15000, 'run done');
+  const pr = await (await post(`/api/tasks/${id}/claude/pr`)).json();
+  assert.match(pr.url, /pull\/7/);
+  const bare = path.join(tmp, 'remotes', 'my-new-app.git');
+  assert.match(sh(bare, 'branch'), new RegExp(`duo/${id}-claude`), 'branch pushed to remote');
+  assert.equal((await taskById(id)).runs[0].prUrl, pr.url);
+
+  assert.equal((await post(`/api/tasks/${id}/claude/apply`)).status, 200);
+  assert.equal((await post(`/api/tasks/${id}/push`)).status, 200);
+  assert.match(sh(bare, 'log', '--oneline', 'main'), /Claude Code/, 'main pushed with the merged work');
 });

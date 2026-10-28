@@ -1,0 +1,31 @@
+#!/usr/bin/env node
+// Fake `gh` CLI for tests.
+const fs = require('fs'), path = require('path'), cp = require('child_process');
+const a = process.argv.slice(2);
+const g = (cwd, ...x) => cp.execFileSync('git', ['-C', cwd, ...x], { stdio: 'pipe' });
+const j = a.join(' ');
+if (a[0] === 'auth' && a[1] === 'status') process.exit(process.env.FAKE_GH_OUT ? 1 : 0);
+if (a[0] === 'api' && a[1] === 'user') { console.log('matt'); process.exit(0); }
+if (a[0] === 'auth' && a[1] === 'setup-git') process.exit(0);
+if (a[0] === 'auth' && a[1] === 'login') {
+  console.error('! First copy your one-time code: ABCD-1234\nPress Enter to open github.com in your browser...');
+  process.stdin.once('data', () => setTimeout(() => process.exit(0), 300));
+  return;
+}
+if (a[0] === 'repo' && a[1] === 'list') {
+  console.log(JSON.stringify([{ nameWithOwner: 'matt/todo-app', description: 'A todo app', isPrivate: true, pushedAt: '2026-10-01T00:00:00Z' }, { nameWithOwner: 'matt/site', description: '', isPrivate: false, pushedAt: '2026-09-01T00:00:00Z' }]));
+  process.exit(0);
+}
+if (a[0] === 'repo' && a[1] === 'clone') {
+  const dest = a[3]; fs.mkdirSync(dest, { recursive: true });
+  g(dest, 'init', '-q', '-b', 'main'); fs.writeFileSync(path.join(dest, 'README.md'), '# cloned\n'); g(dest, 'add', '.');
+  g(dest, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'init'); process.exit(0);
+}
+if (a[0] === 'repo' && a[1] === 'create') {
+  const name = a[2]; const bare = path.join(process.env.FAKE_GH_REMOTES, name + '.git');
+  fs.mkdirSync(bare, { recursive: true }); cp.execFileSync('git', ['init', '-q', '--bare', '-b', 'main', bare]);
+  g('.', 'remote', 'add', 'origin', bare); g('.', 'push', '-q', '-u', 'origin', 'main');
+  console.log('https://github.com/matt/' + name); process.exit(0);
+}
+if (a[0] === 'pr' && a[1] === 'create') { console.log('https://github.com/matt/x/pull/7'); process.exit(0); }
+console.error('fake gh: unhandled ' + j); process.exit(1);
