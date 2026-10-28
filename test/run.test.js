@@ -87,7 +87,8 @@ test('compete: both agents finish, files tracked, apply merges, conflicting appl
 
 test('rejects empty prompt, non-git repo, and unknown agents', async () => {
   assert.equal((await post('/api/tasks', { prompt: '', repo, agents: ['claude'] })).status, 400);
-  assert.equal((await post('/api/tasks', { prompt: 'x', repo: tmp, agents: ['claude'] })).status, 400);
+  const nonGit = await post('/api/tasks', { prompt: 'x', repo: tmp, agents: ['claude'] });
+  assert.equal(nonGit.status, 409); assert.equal((await nonGit.json()).code, 'needs_init'); // existing files: ask before touching
   assert.equal((await post('/api/tasks', { prompt: 'x', repo, agents: ['gpt'] })).status, 400);
 });
 
@@ -194,4 +195,53 @@ test('github: create a repo (local only, then on GitHub), open a PR, push', asyn
   assert.equal((await post(`/api/tasks/${id}/claude/apply`)).status, 200);
   assert.equal((await post(`/api/tasks/${id}/push`)).status, 200);
   assert.match(sh(bare, 'log', '--oneline', 'main'), /Claude Code/, 'main pushed with the merged work');
+});
+
+test('from scratch: empty git repo, missing folder and empty folder all just work', async () => {
+  // git init with zero commits
+  const bare0 = path.join(tmp, 'scratch1'); fs.mkdirSync(bare0); sh(bare0, 'init', '-q', '-b', 'main');
+  assert.equal((await get('/api/repo?path=' + encodeURIComponent(bare0))).hasCommits, false);
+  let r = await post('/api/tasks', { prompt: 'build it', repo: bare0, agents: ['claude'] });
+  assert.equal(r.status, 200);
+  let t = await r.json(); assert.equal(t.fresh, true); assert.equal(t.baseBranch, 'main');
+  await waitFor(async () => idle(await taskById(t.id)), 15000, 'scratch1 done');
+  assert.match(sh(bare0, 'log', '--oneline'), /Initial commit/);
+  assert.equal((await post(`/api/tasks/${t.id}/claude/apply`)).status, 200);
+  assert.ok(fs.existsSync(path.join(bare0, 'hello.txt')));
+
+  // folder that does not exist yet (created + git init)
+  const fresh = path.join(tmp, 'does', 'not', 'exist');
+  r = await post('/api/tasks', { kind: 'team', prompt: 'new app', repo: fresh, roles: { claude: 'Backend', codex: 'Frontend' } });
+  assert.equal(r.status, 200); t = await r.json();
+  assert.ok(fs.existsSync(path.join(fresh, '.git')));
+  await waitFor(async () => { const x = await taskById(t.id); return idle(x) && x.team.messages.length >= 2; }, 25000, 'team in new folder');
+
+  // empty folder nested inside another repo is its own project, not part of the parent
+  const nested = path.join(repo, 'child'); fs.mkdirSync(nested, { recursive: true });
+  const info = await get('/api/repo?path=' + encodeURIComponent(nested));
+  assert.equal(info.git, false); assert.equal(info.empty, true);
+
+  // non-empty non-git folder: refused until the user agrees, then committed as-is
+  const existing = path.join(tmp, 'existing'); fs.mkdirSync(existing); fs.writeFileSync(path.join(existing, 'a.txt'), 'keep me\n');
+  assert.equal((await post('/api/tasks', { prompt: 'x', repo: existing, agents: ['codex'] })).status, 409);
+  r = await post('/api/tasks', { prompt: 'x', repo: existing, agents: ['codex'], initGit: true });
+  assert.equal(r.status, 200); t = await r.json();
+  await waitFor(async () => idle(await taskById(t.id)), 15000, 'existing done');
+  assert.match(sh(existing, 'ls-files'), /a\.txt/);
+});
+
+test('empty GitHub remote: PR explains what to do, Apply + Push publishes the branch, then PR works', async () => {
+  const dir = path.join(tmp, 'projects', 'empty-remote'); fs.mkdirSync(dir, { recursive: true });
+  const bare = path.join(tmp, 'remotes', 'empty-remote.git'); fs.mkdirSync(bare, { recursive: true });
+  execFileSync('git', ['init', '-q', '--bare', '-b', 'main', bare]);
+  sh(dir, 'init', '-q', '-b', 'main'); sh(dir, 'remote', 'add', 'origin', bare);
+  const { id } = await (await post('/api/tasks', { prompt: 'first feature', repo: dir, agents: ['claude'] })).json();
+  await waitFor(async () => idle(await taskById(id)), 15000, 'done');
+  const early = await post(`/api/tasks/${id}/claude/pr`);
+  assert.equal(early.status, 400); assert.match((await early.json()).error, /no "main" branch yet/);
+  assert.equal((await post(`/api/tasks/${id}/claude/apply`)).status, 200);
+  assert.equal((await post(`/api/tasks/${id}/push`)).status, 200);
+  assert.match(sh(bare, 'branch'), /main/);
+  const again = await post(`/api/tasks/${id}/claude/pr`);
+  assert.equal(again.status, 200);
 });

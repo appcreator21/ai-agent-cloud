@@ -94,24 +94,50 @@ function leakedKeys() {
   return out;
 }
 
+const dirIsEmpty = (d) => { try { return fs.readdirSync(d).length === 0; } catch { return false; } };
+
 async function repoInfo(dir) {
   const abs = path.resolve(String(dir || '').replace(/^~(?=$|\/)/, os.homedir()));
   let stat;
-  try { stat = fs.statSync(abs); } catch { return { path: abs, exists: false, git: false }; }
+  try { stat = fs.statSync(abs); } catch { return { path: abs, exists: false, git: false, empty: true }; }
   if (!stat.isDirectory()) return { path: abs, exists: false, git: false };
   const top = await git(abs, 'rev-parse', '--show-toplevel');
-  if (!top.ok) return { path: abs, exists: true, git: false };
+  // An empty folder inside some other repo is a fresh project, not part of that repo.
+  if (!top.ok || (path.resolve(top.stdout.trim()) !== abs && dirIsEmpty(abs))) return { path: abs, exists: true, git: false, empty: dirIsEmpty(abs) };
   const root = top.stdout.trim();
-  const [branch, dirty, head] = await Promise.all([
-    git(root, 'rev-parse', '--abbrev-ref', 'HEAD'),
-    git(root, 'status', '--porcelain'),
-    git(root, 'rev-parse', '--verify', 'HEAD'),
-  ]);
+  const [dirty, head] = await Promise.all([git(root, 'status', '--porcelain'), git(root, 'rev-parse', '--verify', 'HEAD')]);
+  // symbolic-ref also works before the first commit (unborn branch)
+  const branch = await git(root, 'symbolic-ref', '--short', 'HEAD');
   const remote = await git(root, 'remote', 'get-url', 'origin');
   return {
     path: root, exists: true, git: true, hasCommits: head.ok, remote: remote.ok ? remote.stdout.trim() : null,
-    branch: branch.stdout.trim(), dirty: dirty.stdout.trim().split('\n').filter(Boolean).length,
+    branch: branch.stdout.trim() || 'main', dirty: dirty.stdout.trim().split('\n').filter(Boolean).length,
   };
+}
+
+async function initialCommit(dir) {
+  const args = ['commit', '-q', '--allow-empty', '-m', 'Initial commit'];
+  let r = await git(dir, ...args);
+  if (!r.ok) r = await git(dir, '-c', 'user.name=Duo', '-c', 'user.email=duo@localhost', ...args); // no git identity yet
+  if (!r.ok) throw httpErr(500, `Could not create the first commit: ${r.stderr.trim()}`);
+}
+
+// Starting from scratch: make a missing/empty folder, a fresh git repo or an empty clone workable.
+async function ensureRepo(repo, initGit) {
+  if (!repo.exists) {
+    try { fs.mkdirSync(repo.path, { recursive: true }); } catch (e) { throw httpErr(400, `Cannot create ${repo.path}: ${e.message}`); }
+    repo = { ...repo, exists: true, empty: true };
+  }
+  if (!repo.git) {
+    if (!repo.empty && !initGit) throw httpErr(409, `${repo.path} is not a git repository yet.`, 'needs_init');
+    const r = await git(repo.path, 'init', '-q', '-b', 'main');
+    if (!r.ok) throw httpErr(500, r.stderr.trim());
+    if (!repo.empty) await git(repo.path, 'add', '-A');
+    await initialCommit(repo.path);
+    return { ...(await repoInfo(repo.path)), fresh: true };
+  }
+  if (!repo.hasCommits) { await initialCommit(repo.path); return { ...(await repoInfo(repo.path)), fresh: true }; }
+  return repo;
 }
 
 async function authStatus(agent) {
@@ -323,12 +349,11 @@ async function createTask(body) {
     if (!st.installed) throw httpErr(400, `${adapters[a].label} CLI is not installed on this machine.`);
     if (!st.loggedIn) throw httpErr(400, `${adapters[a].label} is not signed in. Use the Sign in button in the sidebar first.`);
   }
-  const repo = await repoInfo(body.repo);
-  if (!repo.git) throw httpErr(400, `${repo.path} is not a git repository`);
-  if (!repo.hasCommits) throw httpErr(400, 'Repository needs at least one commit');
+  if (!String(body.repo || '').trim()) throw httpErr(400, 'Choose a project folder first');
+  const repo = await ensureRepo(await repoInfo(body.repo), body.initGit === true);
   const isTeam = body.kind === 'team';
   const task = {
-    id: newId(), prompt, repo: repo.path, remote: repo.remote, mode: isTeam || body.mode !== 'review' ? 'build' : 'review',
+    id: newId(), prompt, repo: repo.path, remote: repo.remote, fresh: !!repo.fresh, mode: isTeam || body.mode !== 'review' ? 'build' : 'review',
     models: body.models || {}, createdAt: Date.now(), baseBranch: repo.branch,
     runs: agents.map((agent) => ({ agent, status: 'queued', items: [], cursor: 0 })),
   };
@@ -425,7 +450,7 @@ async function discardRun(task, run) {
 }
 
 // ---------- HTTP ----------
-function httpErr(status, message) { const e = new Error(message); e.status = status; return e; }
+function httpErr(status, message, code) { const e = new Error(message); e.status = status; if (code) e.code = code; return e; }
 
 function json(res, status, body) {
   const s = JSON.stringify(body);
@@ -557,7 +582,7 @@ const server = http.createServer(async (req, res) => {
 
     json(res, 404, { error: 'Not found' });
   } catch (e) {
-    json(res, e.status || 500, { error: e.message });
+    json(res, e.status || 500, { error: e.message, code: typeof e.code === 'string' ? e.code : undefined });
   }
 });
 

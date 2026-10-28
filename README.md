@@ -30,6 +30,13 @@ and a shared goal. Both work in **one shared worktree** and talk through a chann
 
 Modes (Compete): **Build** (agents may edit and run commands in their worktree) and **Plan** (read-only).
 
+## Starting from scratch
+
+Point the repo field at anything and Duo makes it workable: a brand-new empty GitHub clone, a `git init` with no commits,
+an empty folder, or a folder that does not exist yet (it is created). Duo adds a first commit so the agents have a base to
+branch from. A non-empty folder that is not a git repo asks before git is set up. With an empty GitHub repo, use **Apply**
+then **Push to GitHub** to publish `main`; after that **Open PR** works for later changes.
+
 ## GitHub
 
 Duo uses the GitHub CLI (`gh`) so it never handles a token. Install it once (`brew install gh`), then:

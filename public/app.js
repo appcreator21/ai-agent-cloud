@@ -20,7 +20,7 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 async function api(path, opts = {}) {
   const r = await fetch(path, { method: opts.method || 'GET', headers: { 'content-type': 'application/json' }, body: opts.body ? JSON.stringify(opts.body) : undefined });
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j.error || r.statusText);
+  if (!r.ok) throw Object.assign(new Error(j.error || r.statusText), { code: j.code });
   return j;
 }
 function toast(msg, err, href) {
@@ -125,7 +125,7 @@ function renderTop() {
   const top = $('#topbar');
   if (!t) { top.innerHTML = ''; return; }
   top.innerHTML = `<h1 class="prompt-full" title="${esc(t.prompt)}">${esc(t.prompt)}</h1>
-    <div class="sub"><span>${esc(t.repo)}</span><span>from ${esc(t.baseBranch)}</span><span>${t.team ? 'team - shared branch' : t.mode === 'review' ? 'plan (read-only)' : 'build'}</span><span>${ago(t.createdAt)}</span>
+    <div class="sub"><span>${esc(t.repo)}</span><span>from ${esc(t.baseBranch)}</span>${t.fresh ? '<span>new project</span>' : ''}<span>${t.team ? 'team - shared branch' : t.mode === 'review' ? 'plan (read-only)' : 'build'}</span><span>${ago(t.createdAt)}</span>
     <span class="grow"></span><button class="mini" id="rerun" title="Load this task back into the composer">Run again</button><button class="mini" id="delTask">Delete</button></div>${compareHtml(t)}`;
   $('#rerun').onclick = () => rerun(t);
   $('#delTask').onclick = async () => {
@@ -689,10 +689,11 @@ async function checkRepo() {
   if (!v) { badge.textContent = ''; return null; }
   try {
     const r = await api('/api/repo?path=' + encodeURIComponent(v));
-    badge.className = 'repo-badge ' + (r.git && r.hasCommits ? (r.dirty ? 'warn' : 'ok') : 'bad');
-    badge.textContent = !r.exists ? 'not found' : !r.git ? 'not a git repo' : !r.hasCommits ? 'no commits' : r.dirty ? `${r.branch} - ${r.dirty} uncommitted` : r.branch;
+    badge.className = 'repo-badge ' + (r.git ? (r.dirty ? 'warn' : 'ok') : r.empty ? 'ok' : 'warn');
+    badge.textContent = !r.exists ? 'new folder' : !r.git ? (r.empty ? 'empty folder' : 'not git yet') : !r.hasCommits ? 'new repo' : r.dirty ? `${r.branch} - ${r.dirty} uncommitted` : r.branch;
+    badge.title = !r.exists ? 'This folder will be created and set up as a git repo.' : !r.git ? (r.empty ? 'Will be set up as a git repo when you run.' : 'You will be asked before git is set up here.') : !r.hasCommits ? 'Empty repo: Duo adds a first commit when you run.' : '';
     if (r.remote && /github\.com/.test(r.remote)) badge.textContent += ' · GitHub';
-    badge.title = r.dirty ? 'Uncommitted changes are not visible to the agents; they branch from the last commit.' : '';
+    if (r.dirty) badge.title = 'Uncommitted changes are not visible to the agents; they branch from the last commit.';
     return r;
   } catch { return null; }
 }
@@ -707,7 +708,12 @@ async function submit(e) {
   try { if (Notification.permission === 'default') Notification.requestPermission(); } catch { /* unsupported */ }
   const btn = $('#runBtn'); btn.disabled = true;
   try {
-    await api('/api/tasks', { method: 'POST', body: { prompt, repo, kind: state.kind, agents: [...state.agents], mode: state.mode, roles: { claude: $('#roleClaude').value, codex: $('#roleCodex').value } } });
+    const body = { prompt, repo, kind: state.kind, agents: [...state.agents], mode: state.mode, roles: { claude: $('#roleClaude').value, codex: $('#roleCodex').value } };
+    try { await api('/api/tasks', { method: 'POST', body }); }
+    catch (err) {
+      if (err.code !== 'needs_init' || !confirm(`${repo} is not a git repository.\n\nSet up git there and commit its current files so the agents can work on it?`)) throw err;
+      await api('/api/tasks', { method: 'POST', body: { ...body, initGit: true } });
+    }
     const recent = [repo, ...(store('repos') || []).filter((x) => x !== repo)].slice(0, 8);
     store('repos', recent); store('repo', repo); fillRecent();
     store('history', [prompt, ...(store('history') || []).filter((x) => x !== prompt)].slice(0, 40)); hist = -1;
