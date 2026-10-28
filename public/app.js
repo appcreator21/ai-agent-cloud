@@ -393,7 +393,11 @@ function syncChanFoot(t, el = chanEl(t)) {
   const note = (h) => foot.insertAdjacentHTML('beforeend', `<span class="note">${h}</span>`);
   if (t.team.discarded) return note('Discarded');
   if (t.team.applied) { note(`Merged into ${esc(t.baseBranch)}`); if (canGh(t)) add('Push to GitHub', 'primary', () => doPush(t)); return; }
-  if (running) return note('Agents are working...');
+  if (running) {
+    note('Agents are working...');
+    add('Stop all', 'danger', () => t.runs.filter((r) => r.status === 'running').forEach((r) => api(`/api/tasks/${t.id}/${r.agent}/cancel`, { method: 'POST' })));
+    return;
+  }
   note(`${t.team.changed ? `${t.team.changed} file${t.team.changed > 1 ? 's' : ''} changed` : 'No file changes'} on <code>${esc(t.team.branch)}</code>`);
   add('Discard', 'danger', () => api(`/api/tasks/${t.id}/team/discard`, { method: 'POST' }).catch((e) => toast(e.message, true)));
   if (canGh(t)) add(t.team.prUrl ? 'View PR' : 'Open PR', '', () => (t.team.prUrl ? window.open(t.team.prUrl, '_blank', 'noopener') : doPr(t, 'team', 'the team')), !t.team.changed && !t.team.prUrl);

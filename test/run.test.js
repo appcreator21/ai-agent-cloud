@@ -39,7 +39,7 @@ before(async () => {
   freshRepo();
   server = spawn('node', ['server.js'], {
     cwd: ROOT, stdio: 'ignore',
-    env: { ...process.env, PORT: String(PORT), DUO_HOME: path.join(tmp, 'home'), DUO_CLAUDE_BIN: path.join(ROOT, 'test/fake/claude'), DUO_CODEX_BIN: path.join(ROOT, 'test/fake/codex'), DUO_MAX_TURNS: '4', FAKE_ARGS_LOG: path.join(tmp, 'args.log'), DUO_GH_BIN: path.join(ROOT, 'test/fake/gh'), FAKE_GH_REMOTES: path.join(tmp, 'remotes'), DUO_PROJECTS: path.join(tmp, 'projects') },
+    env: { ...process.env, PORT: String(PORT), DUO_HOME: path.join(tmp, 'home'), DUO_CLAUDE_BIN: path.join(ROOT, 'test/fake/claude'), DUO_CODEX_BIN: path.join(ROOT, 'test/fake/codex'), FAKE_ARGS_LOG: path.join(tmp, 'args.log'), DUO_GH_BIN: path.join(ROOT, 'test/fake/gh'), FAKE_GH_REMOTES: path.join(tmp, 'remotes'), DUO_PROJECTS: path.join(tmp, 'projects') },
   });
   await waitFor(() => fetch(BASE + '/api/status').then((r) => r.ok).catch(() => false), 8000, 'server');
 });
@@ -104,6 +104,7 @@ test('team: agents message each other, get re-woken, share one diff, apply merge
   const pairs = t.team.messages.map((m) => `${m.from}>${m.to}`);
   assert.ok(pairs.includes('claude>codex') && pairs.includes('codex>claude'), 'two-way talk: ' + pairs);
   assert.ok(t.runs[0].turns >= 2, 'claude was re-woken by codex message');
+  assert.ok(!t.runs.some((q) => q.items.some((i) => /Turn limit/.test(i.text || ''))), 'no turn cap by default');
   const d = await get(`/api/tasks/${id}/team/diff`);
   assert.match(d.diff, /server\/todos\.js/); assert.match(d.diff, /web\/index\.html/);
   assert.doesNotMatch(d.diff, /\.duo/, 'mailbox excluded from diff');
@@ -268,4 +269,18 @@ test('model choice: passed to each CLI, validated, and shown on the task', async
   assert.equal((await post('/api/tasks', { prompt: 'x', repo, agents: ['claude'], models: { claude: '--dangerously-skip-permissions' } })).status, 400);
   assert.equal((await post('/api/tasks', { prompt: 'x', repo, agents: ['claude'], models: { claude: 'a b; rm -rf' } })).status, 400);
   assert.equal((await post('/api/tasks', { kind: 'team', prompt: 'x', repo, models: { codex: 'gpt-5' } })).status, 200);
+});
+
+test('turns are unlimited by default: agents keep answering each other past 4 turns', async () => {
+  freshRepo();
+  const { id } = await (await post('/api/tasks', { kind: 'team', prompt: 'long chat', repo, roles: { claude: 'A', codex: 'B' } })).json();
+  await waitFor(async () => { const x = await taskById(id); return idle(x) && x.team.messages.length >= 3 && x; }, 25000, 'initial');
+  for (let i = 1; i <= 5; i++) { // five human nudges: each wakes claude again, taking it well beyond 4 turns
+    const before = (await taskById(id)).runs[0].turns;
+    assert.equal((await post(`/api/tasks/${id}/message`, { to: 'claude', text: `nudge ${i}` })).status, 200);
+    await waitFor(async () => { const x = await taskById(id); return x.runs[0].turns > before && idle(x); }, 15000, `nudge ${i}`);
+  }
+  const t = await taskById(id);
+  assert.ok(t.runs[0].turns > 4, 'turns: ' + t.runs[0].turns);
+  assert.ok(!t.runs[0].items.some((i) => /Turn limit/.test(i.text || '')));
 });
