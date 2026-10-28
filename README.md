@@ -30,6 +30,13 @@ and a shared goal. Both work in **one shared worktree** and talk through a chann
 
 Modes (Compete): **Build** (agents may edit and run commands in their worktree) and **Plan** (read-only).
 
+## CI-aware agents
+
+If the project has GitHub Actions workflows, Duo reads their `run:` steps (dropping publish/deploy/cloud steps) and tells the agents
+to run the relevant checks (lint, types, tests) and fix what they broke before finishing, in Compete, Team and Build mode.
+The task header shows a "runs CI checks" tag. Plan mode (read-only) skips this. It is a strong nudge, not a guarantee:
+agents can still miss something, so keep CI on pull requests as the safety net.
+
 ## Choosing models
 
 The **Models** button in the composer sets the model for each agent (Claude Code: Default, Opus, Sonnet, Haiku, or any model id; Codex: Default or any model id).

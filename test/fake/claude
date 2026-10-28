@@ -33,6 +33,7 @@ async function team(input, out, wait) {
 }
 let input = ''; process.stdin.on('data', (c) => (input += c));
 process.stdin.on('end', async () => {
+  if (process.env.FAKE_ARGS_LOG) require('fs').appendFileSync(process.env.FAKE_ARGS_LOG, JSON.stringify({ bin: 'claude', input }) + '\n');
   const out = (o) => console.log(JSON.stringify(o));
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   out({ type: 'system', subtype: 'init', model: 'claude-sonnet-5-5' });

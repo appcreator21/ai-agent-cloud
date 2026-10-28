@@ -13,6 +13,7 @@ const { spawn, execFile } = require('node:child_process');
 const { adapters, parseLine, hintFor } = require('./lib/agents');
 const team = require('./lib/team');
 const gh = require('./lib/github');
+const ci = require('./lib/ci');
 
 const PORT = Number(process.env.PORT || 4317);
 const HOST = '127.0.0.1';
@@ -181,7 +182,7 @@ async function startRun(task, run) {
   run.dir = dir; run.branch = branch; run.repoRoot = repo.path;
   broadcast({ type: 'status', taskId: task.id, agent: run.agent, status: 'running', extra: { branch } });
   pushItem(task, run, { kind: 'meta', text: `${adapters[run.agent].label} started in isolated branch ${branch}` });
-  launch(task, run, task.prompt);
+  launch(task, run, task.ci ? `${task.prompt}\n\n${task.ci}` : task.prompt);
 }
 
 // One agent turn: spawn the CLI in run.dir with the prompt on stdin.
@@ -299,7 +300,7 @@ async function startTurn(task, run, pending) {
     pushItem(task, run, { kind: 'meta', text: `${adapters[run.agent].label} joined the team: ${task.team.roles[run.agent]}` });
   }
   const files = (await changedOf(run.dir)).map((l) => l.slice(3));
-  launch(task, run, team.buildPrompt({ agent: run.agent, goal: task.prompt, roles: task.team.roles, turn, pending, changedFiles: files }));
+  launch(task, run, team.buildPrompt({ agent: run.agent, goal: task.prompt, roles: task.team.roles, turn, pending, changedFiles: files, ci: task.ci }));
 }
 
 async function createTeamTask(task, repo, body) {
@@ -365,7 +366,7 @@ async function createTask(body) {
   const repo = await ensureRepo(await repoInfo(body.repo), body.initGit === true);
   const isTeam = body.kind === 'team';
   const task = {
-    id: newId(), prompt, repo: repo.path, remote: repo.remote, fresh: !!repo.fresh, mode: isTeam || body.mode !== 'review' ? 'build' : 'review',
+    id: newId(), prompt, repo: repo.path, remote: repo.remote, fresh: !!repo.fresh, ci: isTeam || body.mode !== 'review' ? ci.ciSection(repo.path) : '', mode: isTeam || body.mode !== 'review' ? 'build' : 'review',
     models: cleanModels(body.models), createdAt: Date.now(), baseBranch: repo.branch,
     runs: agents.map((agent) => ({ agent, status: 'queued', items: [], cursor: 0 })),
   };

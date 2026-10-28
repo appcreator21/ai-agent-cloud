@@ -126,7 +126,7 @@ function renderTop() {
   const top = $('#topbar');
   if (!t) { top.innerHTML = ''; return; }
   top.innerHTML = `<h1 class="prompt-full" title="${esc(t.prompt)}">${esc(t.prompt)}</h1>
-    <div class="sub"><span>${esc(t.repo)}</span><span>from ${esc(t.baseBranch)}</span>${t.fresh ? '<span>new project</span>' : ''}<span>${t.team ? 'team - shared branch' : t.mode === 'review' ? 'plan (read-only)' : 'build'}</span><span>${ago(t.createdAt)}</span>
+    <div class="sub"><span>${esc(t.repo)}</span><span>from ${esc(t.baseBranch)}</span>${t.fresh ? '<span>new project</span>' : ''}${t.ci ? '<span title="The agents were told to run this repo\'s CI checks before finishing">runs CI checks</span>' : ''}<span>${t.team ? 'team - shared branch' : t.mode === 'review' ? 'plan (read-only)' : 'build'}</span><span>${ago(t.createdAt)}</span>
     <span class="grow"></span><button class="mini" id="rerun" title="Load this task back into the composer">Run again</button><button class="mini" id="delTask">Delete</button></div>${compareHtml(t)}`;
   $('#rerun').onclick = () => rerun(t);
   $('#delTask').onclick = async () => {

@@ -7,6 +7,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { parseLine, hintFor } = require('../lib/agents');
+const { ciCommands, ciSection } = require('../lib/ci');
 
 const ROOT = path.join(__dirname, '..');
 const PORT = 4500 + Math.floor(Math.random() * 300);
@@ -255,7 +256,7 @@ test('model choice: passed to each CLI, validated, and shown on the task', async
   const t = await r.json();
   assert.deepEqual(t.models, { claude: 'sonnet', codex: 'gpt-5-codex' });
   await waitFor(async () => idle(await taskById(t.id)), 15000, 'models done');
-  const runs = fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((x) => x.args.includes('--model') || x.args.includes('-m'));
+  const runs = fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((x) => x.args && (x.args.includes('--model') || x.args.includes('-m')));
   const claudeArgs = runs.find((x) => x.bin === 'claude').args, codexArgs = runs.find((x) => x.bin === 'codex').args;
   assert.equal(claudeArgs[claudeArgs.indexOf('--model') + 1], 'sonnet');
   assert.equal(codexArgs[codexArgs.indexOf('-m') + 1], 'gpt-5-codex');
@@ -283,4 +284,40 @@ test('turns are unlimited by default: agents keep answering each other past 4 tu
   const t = await taskById(id);
   assert.ok(t.runs[0].turns > 4, 'turns: ' + t.runs[0].turns);
   assert.ok(!t.runs[0].items.some((i) => /Turn limit/.test(i.text || '')));
+});
+
+test('CI-aware: workflow checks are read, unsafe steps dropped, and passed to the agents', async () => {
+  freshRepo();
+  fs.mkdirSync(path.join(repo, '.github', 'workflows'), { recursive: true });
+  fs.writeFileSync(path.join(repo, '.github', 'workflows', 'ci.yml'), [
+    'name: CI', 'on: [push]', 'jobs:', '  test:', '    runs-on: ubuntu-latest', '    steps:',
+    '      - uses: actions/checkout@v4',
+    '      - name: Install', '        run: |', '          python -m pip install --upgrade pip', '          pip install -e ".[dev]"',
+    '      - name: Lint', '        run: ruff check .',
+    '      - name: Tests', '        run: "pytest -q --maxfail=1"',
+    '      - name: Publish', '        run: twine upload dist/*',
+    '      - name: Deploy', '        run: aws s3 sync . s3://bucket',
+  ].join('\n'));
+  sh(repo, 'add', '.'); sh(repo, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'add ci');
+
+  const { commands } = ciCommands(repo);
+  assert.deepEqual(commands, ['python -m pip install --upgrade pip', 'pip install -e ".[dev]"', 'ruff check .', 'pytest -q --maxfail=1']);
+  assert.match(ciSection(repo), /never run publish or deploy/);
+  assert.equal(ciSection(tmp), '', 'no workflows, no section');
+
+  const log = path.join(tmp, 'args.log'); fs.writeFileSync(log, '');
+  const t = await (await post('/api/tasks', { prompt: 'add a feature', repo, agents: ['claude'] })).json();
+  assert.ok(t.ci.includes('ruff check .'));
+  await waitFor(async () => idle(await taskById(t.id)), 15000, 'ci run');
+  const input = fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).find((x) => x.input)?.input || '';
+  assert.match(input, /add a feature/); assert.match(input, /CI CHECKS/); assert.match(input, /\$ pytest -q --maxfail=1/);
+  assert.doesNotMatch(input, /twine|aws s3/);
+
+  // team prompts get it too; read-only Plan mode does not
+  const tm = await (await post('/api/tasks', { kind: 'team', prompt: 'team feature', repo, roles: { claude: 'A', codex: 'B' } })).json();
+  await waitFor(async () => idle(await taskById(tm.id)), 25000, 'team ci run');
+  const inputs = fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((x) => x.input && /TOGETHER/.test(x.input));
+  assert.ok(inputs.length >= 2 && inputs.every((x) => /CI CHECKS/.test(x.input)));
+  const plan = await (await post('/api/tasks', { prompt: 'just look', repo, agents: ['claude'], mode: 'review' })).json();
+  assert.equal(plan.ci, '');
 });
