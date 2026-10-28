@@ -1,0 +1,17 @@
+{
+  "name": "duo",
+  "version": "0.1.0",
+  "description": "Run Claude Code and Codex side by side on the same task, using your subscription logins.",
+  "bin": {
+    "duo": "server.js"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "DUO_HOME=/tmp/duo-dev DUO_CLAUDE_BIN=$PWD/test/fake/claude DUO_CODEX_BIN=$PWD/test/fake/codex node server.js",
+    "test": "node --test test/run.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,57 @@
+#!/usr/bin/env node
+// Fake `codex` CLI for tests.
+const fs = require('fs');
+const a = process.argv.slice(2);
+if (a[0] === 'login' && a[1] === 'status') { console.error('Logged in using ChatGPT'); process.exit(0); }
+
+// ---- team scenario (prompt contains the team preamble) ----
+const cp = require('child_process');
+let n = 0;
+const out2 = (o) => { // translate claude-shaped events into codex JSONL
+  const c = o.message && o.message.content[0];
+  if (!c) return;
+  if (c.type === 'text') console.log(JSON.stringify({ type: 'item.completed', item: { id: 't' + (n++), type: 'agent_message', text: c.text } }));
+  else if (c.type === 'tool_use') console.log(JSON.stringify({ type: 'item.completed', item: { id: 'e' + (n++), type: 'file_change', changes: [{ path: (c.input.file_path || c.input.command), kind: 'update' }] } }));
+};
+const say = (to, text) => cp.execFileSync('node', ['.duo/codex/to-' + to + '.js', text]).toString();
+async function team(input, out, wait) {
+  const follow = /FOLLOW-UP TURN/.test(input);
+  const emit = (o) => out(o);
+  if (follow) {
+    const inbox = fs.readFileSync('.duo/codex/inbox.md', 'utf8').split('\n').filter((l) => l && !l.startsWith('#')).slice(-1)[0] || '';
+    emit({ type: 'assistant', message: { content: [{ type: 'text', text: 'Reading new messages. Latest: ' + inbox }] } });
+    await wait(500);
+    /* well-behaved: no thanks message */
+    emit({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'f1', name: 'Bash', input: { command: 'node .duo/codex/to-claude.js ...' } }] } });
+    emit({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'f1', content: 'sent' }] } });
+    return 'Handled the follow-up.';
+  }
+  fs.mkdirSync('web', {recursive:true}); fs.writeFileSync('web/index.html', '<h1>Todos</h1>\n<ul id=list></ul>\n');
+  emit({ type: 'assistant', message: { content: [{ type: 'text', text: 'Frontend plan ready. Writing files and syncing the contract.' }] } });
+  await wait(400);
+  emit({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'a1', name: 'Edit', input: { file_path: 'web/index.html' } }] } });
+  emit({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'a1', content: 'ok' }] } });
+  await wait(900); say('claude', 'UI done. Do you support deleting a todo? I need DELETE /api/todos/:id.');
+  emit({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'a2', name: 'Bash', input: { command: 'node .duo/codex/to-claude.js ...' } }] } });
+  emit({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'a2', content: 'sent' }] } });
+  if (false) {}
+  return 'Frontend written; asked Claude about DELETE.';
+}
+let input = ''; process.stdin.on('data', (c) => (input += c));
+process.stdin.on('end', async () => {
+  const out = (o) => console.log(JSON.stringify(o));
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  out({ type: 'thread.started', thread_id: 'x' });
+  out({ type: 'turn.started' });
+  if (/TOGETHER in the same git/.test(input)) { const r = await team(input, out2, wait); out({ type: 'item.completed', item: { id: 'z', type: 'agent_message', text: r } }); out({ type: 'turn.completed', usage: { input_tokens: 700, output_tokens: 90 } }); return; }
+  await wait(400);
+  out({ type: 'item.completed', item: { id: 'i0', type: 'reasoning', text: 'thinking' } });
+  out({ type: 'item.started', item: { id: 'i1', type: 'command_execution', command: 'bash -lc ls', status: 'in_progress' } });
+  await wait(300);
+  out({ type: 'item.completed', item: { id: 'i1', type: 'command_execution', command: 'bash -lc ls', aggregated_output: 'README.md\n', exit_code: 0, status: 'completed' } });
+  fs.writeFileSync('hello.txt', 'Hello from Codex\n');
+  out({ type: 'item.completed', item: { id: 'i2', type: 'file_change', changes: [{ path: 'hello.txt', kind: 'add' }] } });
+  await wait(300);
+  out({ type: 'item.completed', item: { id: 'i3', type: 'agent_message', text: `Done: ${input.trim()}` } });
+  out({ type: 'turn.completed', usage: { input_tokens: 900, cached_input_tokens: 0, output_tokens: 120 } });
+});

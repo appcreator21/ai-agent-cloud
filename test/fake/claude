@@ -1,0 +1,51 @@
+#!/usr/bin/env node
+// Fake `claude` CLI for tests: emits the stream-json shapes the real one does.
+const fs = require('fs');
+const a = process.argv.slice(2);
+if (a[0] === 'auth' && a[1] === 'status') { console.log(JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', email: 'matt@example.com', subscriptionType: 'pro' })); process.exit(0); }
+
+// ---- team scenario (prompt contains the team preamble) ----
+const cp = require('child_process');
+const say = (to, text) => cp.execFileSync('node', ['.duo/claude/to-' + to + '.js', text]).toString();
+async function team(input, out, wait) {
+  const follow = /FOLLOW-UP TURN/.test(input);
+  const emit = (o) => out(o);
+  if (follow) {
+    const inbox = fs.readFileSync('.duo/claude/inbox.md', 'utf8').split('\n').filter((l) => l && !l.startsWith('#')).slice(-1)[0] || '';
+    emit({ type: 'assistant', message: { content: [{ type: 'text', text: 'Reading new messages. Latest: ' + inbox }] } });
+    await wait(500);
+    say('codex', 'Yes - added DELETE /api/todos/:id, contract updated.'); fs.appendFileSync('.duo/CONTRACT.md', '- DELETE /api/todos/:id -> 204\\n');
+    emit({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'f1', name: 'Bash', input: { command: 'node .duo/claude/to-codex.js ...' } }] } });
+    emit({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'f1', content: 'sent' }] } });
+    return 'Handled the follow-up.';
+  }
+  fs.mkdirSync('server', {recursive:true}); fs.writeFileSync('server/todos.js', 'module.exports = [{ id: 1, title: "demo" }];\n'); fs.appendFileSync('.duo/CONTRACT.md', '- GET /api/todos -> [{id,title}]\\n- POST /api/todos {title}\\n');
+  emit({ type: 'assistant', message: { content: [{ type: 'text', text: 'Backend plan ready. Writing files and syncing the contract.' }] } });
+  await wait(400);
+  emit({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'a1', name: 'Write', input: { file_path: 'server/todos.js' } }] } });
+  emit({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'a1', content: 'ok' }] } });
+  say('codex', 'Contract is in .duo/CONTRACT.md: GET/POST /api/todos. Tell me if you need more.');
+  emit({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'a2', name: 'Bash', input: { command: 'node .duo/claude/to-codex.js ...' } }] } });
+  emit({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'a2', content: 'sent' }] } });
+  if (false) {}
+  return 'Backend endpoints written.';
+}
+let input = ''; process.stdin.on('data', (c) => (input += c));
+process.stdin.on('end', async () => {
+  const out = (o) => console.log(JSON.stringify(o));
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  out({ type: 'system', subtype: 'init', model: 'claude-sonnet-5-5' });
+  if (/SLOW/.test(input)) { out({ type: 'assistant', message: { content: [{ type: 'text', text: 'working slowly' }] } }); await wait(30000); }
+  if (/TOGETHER in the same git/.test(input)) { const r = await team(input, out, wait); out({ type: 'result', subtype: 'success', is_error: false, result: r, duration_ms: 900, num_turns: 2, usage: { input_tokens: 800, output_tokens: 150 } }); return; }
+  await wait(300);
+  out({ type: 'assistant', message: { content: [{ type: 'text', text: `I'll look at the repo for: **${input.trim()}**\n\nPlan:\n\n- read files\n- write \`hello.txt\`` }] } });
+  await wait(300);
+  out({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls -la' } }] } });
+  await wait(300);
+  out({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'README.md\nsrc' }] } });
+  fs.writeFileSync('hello.txt', 'Hello from Claude\nline 2\n');
+  out({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't2', name: 'Write', input: { file_path: 'hello.txt' } }] } });
+  await wait(300);
+  out({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't2', content: 'ok' }] } });
+  out({ type: 'result', subtype: 'success', is_error: false, result: 'Created hello.txt with a greeting.\n\n```js\nconsole.log("hi")\n```', duration_ms: 1500, num_turns: 3, usage: { input_tokens: 1200, cache_read_input_tokens: 5000, output_tokens: 340 } });
+});

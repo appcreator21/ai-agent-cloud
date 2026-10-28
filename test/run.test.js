@@ -1,0 +1,150 @@
+'use strict';
+// Integration tests: boot the real server against the fake CLIs in test/fake.
+const { test, before, after } = require('node:test');
+const assert = require('node:assert/strict');
+const { spawn, execFileSync } = require('node:child_process');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { parseLine, hintFor } = require('../lib/agents');
+
+const ROOT = path.join(__dirname, '..');
+const PORT = 4500 + Math.floor(Math.random() * 300);
+const BASE = `http://127.0.0.1:${PORT}`;
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'duo-it-'));
+const repo = path.join(tmp, 'repo');
+let server;
+
+const sh = (cwd, ...a) => execFileSync('git', ['-C', cwd, ...a], { encoding: 'utf8' });
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const get = (p) => fetch(BASE + p).then((r) => r.json());
+const post = (p, body) => fetch(BASE + p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) });
+async function waitFor(fn, ms = 15000, what = 'condition') {
+  const end = Date.now() + ms;
+  for (;;) { const v = await fn(); if (v) return v; if (Date.now() > end) throw new Error('timeout waiting for ' + what); await sleep(120); }
+}
+const taskById = async (id) => (await get('/api/tasks')).find((t) => t.id === id);
+const idle = (t) => t.runs.every((r) => ['done', 'failed', 'cancelled'].includes(r.status));
+
+function freshRepo() {
+  fs.rmSync(repo, { recursive: true, force: true });
+  fs.mkdirSync(repo, { recursive: true });
+  sh(repo, 'init', '-q', '-b', 'main');
+  fs.writeFileSync(path.join(repo, 'README.md'), 'hi\n');
+  sh(repo, 'add', '.');
+  sh(repo, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'init');
+}
+
+before(async () => {
+  freshRepo();
+  server = spawn('node', ['server.js'], {
+    cwd: ROOT, stdio: 'ignore',
+    env: { ...process.env, PORT: String(PORT), DUO_HOME: path.join(tmp, 'home'), DUO_CLAUDE_BIN: path.join(ROOT, 'test/fake/claude'), DUO_CODEX_BIN: path.join(ROOT, 'test/fake/codex'), DUO_MAX_TURNS: '4' },
+  });
+  await waitFor(() => fetch(BASE + '/api/status').then((r) => r.ok).catch(() => false), 8000, 'server');
+});
+after(async () => {
+  const exited = new Promise((r) => server.on('exit', r));
+  server.kill('SIGTERM');
+  await exited;
+  fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+});
+
+test('parsers map CLI events to feed items', () => {
+  const c = parseLine('claude', JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'a', name: 'Write', input: { file_path: '/x/y.js' } }] } }), {});
+  assert.equal(c[0].kind, 'tool'); assert.deepEqual(c[0].files, ['/x/y.js']);
+  const x = parseLine('codex', JSON.stringify({ type: 'item.completed', item: { id: '1', type: 'file_change', changes: [{ path: 'a.js', kind: 'add' }] } }), {});
+  assert.deepEqual(x[0].files, ['a.js']);
+  const st = {}; parseLine('codex', JSON.stringify({ type: 'turn.failed', error: { message: 'boom' } }), st);
+  assert.equal(st.failed, true);
+  assert.equal(parseLine('claude', 'not json', {})[0].kind, 'raw');
+  assert.equal(hintFor('You hit your usage limit'), 'limit');
+  assert.equal(hintFor('please log in'), 'auth');
+});
+
+test('rejects foreign Host and Origin', async () => {
+  assert.equal((await fetch(BASE + '/api/tasks', { headers: { Origin: 'http://evil.com' } })).status, 403);
+  const r = await new Promise((res) => require('node:http').get({ host: '127.0.0.1', port: PORT, path: '/api/tasks', headers: { Host: 'evil.com' } }, res));
+  assert.equal(r.statusCode, 403);
+  r.resume();
+});
+
+test('compete: both agents finish, files tracked, apply merges, conflicting apply aborts cleanly', async () => {
+  const r = await post('/api/tasks', { prompt: 'add a greeting', repo, agents: ['claude', 'codex'] });
+  assert.equal(r.status, 200);
+  const { id } = await r.json();
+  const t = await waitFor(async () => { const x = await taskById(id); return idle(x) && x; }, 15000, 'compete done');
+  assert.deepEqual(t.runs.map((x) => x.status), ['done', 'done']);
+  assert.ok(t.runs[0].items.some((i) => i.files?.includes('hello.txt')), 'claude file tracked');
+  assert.ok(t.runs[1].items.some((i) => i.files?.includes('hello.txt')), 'codex file tracked');
+  assert.equal((await post(`/api/tasks/${id}/claude/apply`)).status, 200);
+  assert.match(fs.readFileSync(path.join(repo, 'hello.txt'), 'utf8'), /Claude/);
+  const bad = await post(`/api/tasks/${id}/codex/apply`);
+  assert.equal(bad.status, 409);
+  assert.equal(sh(repo, 'status', '--porcelain').trim(), '', 'repo left clean after failed merge');
+  assert.equal((await post(`/api/tasks/${id}/codex/discard`)).status, 200);
+});
+
+test('rejects empty prompt, non-git repo, and unknown agents', async () => {
+  assert.equal((await post('/api/tasks', { prompt: '', repo, agents: ['claude'] })).status, 400);
+  assert.equal((await post('/api/tasks', { prompt: 'x', repo: tmp, agents: ['claude'] })).status, 400);
+  assert.equal((await post('/api/tasks', { prompt: 'x', repo, agents: ['gpt'] })).status, 400);
+});
+
+test('team: agents message each other, get re-woken, share one diff, apply merges', async () => {
+  freshRepo();
+  const r = await post('/api/tasks', { kind: 'team', prompt: 'Build a todo app', repo, roles: { claude: 'Backend', codex: 'Frontend' } });
+  assert.equal(r.status, 200);
+  const { id } = await r.json();
+  const t = await waitFor(async () => {
+    const x = await taskById(id);
+    return idle(x) && x.team.messages.length >= 3 && x.runs.every((q) => q.turns >= 1) && x;
+  }, 25000, 'team conversation');
+  const pairs = t.team.messages.map((m) => `${m.from}>${m.to}`);
+  assert.ok(pairs.includes('claude>codex') && pairs.includes('codex>claude'), 'two-way talk: ' + pairs);
+  assert.ok(t.runs[0].turns >= 2, 'claude was re-woken by codex message');
+  const d = await get(`/api/tasks/${id}/team/diff`);
+  assert.match(d.diff, /server\/todos\.js/); assert.match(d.diff, /web\/index\.html/);
+  assert.doesNotMatch(d.diff, /\.duo/, 'mailbox excluded from diff');
+
+  // a human message wakes an idle agent
+  const before = t.runs[1].turns;
+  assert.equal((await post(`/api/tasks/${id}/message`, { to: 'codex', text: 'also add a footer' })).status, 200);
+  await waitFor(async () => { const x = await taskById(id); return x.runs[1].turns > before && idle(x); }, 15000, 'human wake');
+
+  assert.equal((await post(`/api/tasks/${id}/team/apply`)).status, 200);
+  assert.ok(fs.existsSync(path.join(repo, 'server/todos.js')) && fs.existsSync(path.join(repo, 'web/index.html')));
+  assert.ok(!fs.existsSync(path.join(repo, '.duo')), 'mailbox not merged into repo');
+  assert.match(sh(repo, 'log', '--oneline', '-3'), /Duo team/);
+  assert.equal((await post(`/api/tasks/${id}/message`, { to: 'all', text: 'late' })).status, 400, 'closed team rejects messages');
+});
+
+test('cancel kills a running agent promptly', async () => {
+  freshRepo();
+  const { id } = await (await post('/api/tasks', { prompt: 'SLOW task', repo, agents: ['claude'] })).json();
+  await waitFor(async () => (await taskById(id)).runs[0].items.some((i) => i.text === 'working slowly'), 8000, 'slow start');
+  assert.equal((await post(`/api/tasks/${id}/claude/cancel`)).status, 200);
+  const t = await waitFor(async () => { const x = await taskById(id); return x.runs[0].status === 'cancelled' && x; }, 5000, 'cancelled');
+  assert.equal(t.runs[0].status, 'cancelled');
+  await post(`/api/tasks/${id}/claude/discard`);
+});
+
+test('delete task removes worktrees and branches', async () => {
+  freshRepo();
+  const { id } = await (await post('/api/tasks', { prompt: 'x', repo, agents: ['codex'] })).json();
+  await waitFor(async () => idle(await taskById(id)), 15000, 'done');
+  assert.match(sh(repo, 'branch'), new RegExp(`duo/${id}-codex`));
+  await fetch(`${BASE}/api/tasks/${id}`, { method: 'DELETE' });
+  assert.doesNotMatch(sh(repo, 'branch'), new RegExp(`duo/${id}`));
+});
+
+test('missing CLI gives a clear error', async () => {
+  const port = PORT + 400;
+  const s = spawn('node', ['server.js'], { cwd: ROOT, stdio: 'ignore', env: { ...process.env, PORT: String(port), DUO_HOME: path.join(tmp, 'home2'), DUO_CLAUDE_BIN: '/nonexistent/claude' } });
+  try {
+    await waitFor(() => fetch(`http://127.0.0.1:${port}/api/status`).then((r) => r.ok).catch(() => false), 8000, 'server2');
+    const r = await fetch(`http://127.0.0.1:${port}/api/tasks`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: 'x', repo, agents: ['claude'] }) });
+    assert.equal(r.status, 400);
+    assert.match((await r.json()).error, /not installed/);
+  } finally { s.kill('SIGTERM'); }
+});
