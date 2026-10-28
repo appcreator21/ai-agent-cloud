@@ -619,3 +619,31 @@ button.proj-item { display: block; }
 .gh-close { margin-top: 2px; }
 .acct.github::before { background: linear-gradient(#cdd3e0, transparent); }
 .toast a { color: var(--ink); text-decoration: underline; margin-left: 4px; }
+
+/* ---------- model picker ---------- */
+.model-btn.set { color: var(--ink); border-color: var(--hair-2); }
+.model-btn span { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.models {
+  position: absolute; left: 0; bottom: calc(100% + 12px); width: min(560px, 100%); padding: 6px 6px 12px; display: grid; gap: 4px;
+  background: rgba(16,17,22,.94); -webkit-backdrop-filter: blur(30px) saturate(160%); backdrop-filter: blur(30px) saturate(160%);
+  border: 1px solid var(--hair-2); border-radius: 20px; box-shadow: var(--hi), 0 40px 100px -20px rgba(0,0,0,.9); animation: rise .25s var(--ease) both; z-index: 20;
+}
+.mdl-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 8px 4px 14px; }
+.mdl-head b { font-weight: 600; font-size: 14px; letter-spacing: -.01em; }
+.mdl-row { padding: 10px 14px; display: grid; gap: 9px; border-radius: 14px; }
+.mdl-name { display: flex; align-items: center; gap: 9px; font-size: 13px; font-weight: 500; }
+.mdl-name i { width: 7px; height: 7px; border-radius: 50%; }
+.mdl-row.claude .mdl-name i { background: var(--claude); box-shadow: 0 0 10px var(--claude); } .mdl-row.codex .mdl-name i { background: var(--codex); box-shadow: 0 0 10px var(--codex); }
+.mdl-opts { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.mdl-opt { background: transparent; border: 1px solid var(--hair); border-radius: 999px; padding: 4px 12px; font-size: 12.5px; color: var(--muted); transition: all .15s; }
+.mdl-opt:hover { color: var(--ink-2); border-color: var(--hair-2); }
+.mdl-opt.on { color: var(--ink); background: var(--glass-3); border-color: var(--hair-2); box-shadow: var(--hi); }
+.mdl-row.claude .mdl-opt.on, .mdl-row.claude .mdl-custom.on { border-color: rgba(226,128,93,.55); }
+.mdl-row.codex .mdl-opt.on, .mdl-row.codex .mdl-custom.on { border-color: rgba(25,181,143,.55); }
+.mdl-custom { flex: 1; min-width: 190px; background: rgba(0,0,0,.25); border: 1px solid var(--hair); border-radius: 999px; padding: 4px 13px; color: var(--ink); font: 12px var(--mono); outline: none; }
+.mdl-custom:focus { border-color: var(--hair-2); }
+.mdl-note { margin: 2px 14px 0; color: var(--faint); font-size: 12px; line-height: 1.5; }
+.lane .model-tag { font: 500 10.5px var(--mono); color: var(--muted); border: 1px solid var(--hair); border-radius: 999px; padding: 0 8px; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.models, .proj { background: rgba(14,15,19,.985); }
+.model-btn span { max-width: 120px; }
+.repo { min-width: 150px; flex: 0 1 260px; }

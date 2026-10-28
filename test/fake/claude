@@ -2,6 +2,7 @@
 // Fake `claude` CLI for tests: emits the stream-json shapes the real one does.
 const fs = require('fs');
 const a = process.argv.slice(2);
+if (process.env.FAKE_ARGS_LOG) require('fs').appendFileSync(process.env.FAKE_ARGS_LOG, JSON.stringify({ bin: 'claude', args: a }) + '\n');
 if (a[0] === 'auth' && a[1] === 'status') { console.log(JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', email: 'matt@example.com', subscriptionType: 'pro' })); process.exit(0); }
 
 // ---- team scenario (prompt contains the team preamble) ----

@@ -337,6 +337,18 @@ setInterval(() => {
   }
 }, 600);
 
+// Model ids go to the CLI as a single argv value; keep them plain and never let one look like a flag.
+function cleanModels(m) {
+  const out = {};
+  for (const a of Object.keys(adapters)) {
+    const v = String(m?.[a] ?? '').trim();
+    if (!v) continue;
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:\[\]/-]{0,79}$/.test(v)) throw httpErr(400, `Invalid model name for ${adapters[a].label}: "${v.slice(0, 40)}"`);
+    out[a] = v;
+  }
+  return out;
+}
+
 function newId() { return crypto.randomBytes(3).toString('hex'); }
 
 async function createTask(body) {
@@ -354,7 +366,7 @@ async function createTask(body) {
   const isTeam = body.kind === 'team';
   const task = {
     id: newId(), prompt, repo: repo.path, remote: repo.remote, fresh: !!repo.fresh, mode: isTeam || body.mode !== 'review' ? 'build' : 'review',
-    models: body.models || {}, createdAt: Date.now(), baseBranch: repo.branch,
+    models: cleanModels(body.models), createdAt: Date.now(), baseBranch: repo.branch,
     runs: agents.map((agent) => ({ agent, status: 'queued', items: [], cursor: 0 })),
   };
   if (isTeam) await createTeamTask(task, repo, body);

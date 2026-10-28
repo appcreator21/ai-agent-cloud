@@ -39,7 +39,7 @@ before(async () => {
   freshRepo();
   server = spawn('node', ['server.js'], {
     cwd: ROOT, stdio: 'ignore',
-    env: { ...process.env, PORT: String(PORT), DUO_HOME: path.join(tmp, 'home'), DUO_CLAUDE_BIN: path.join(ROOT, 'test/fake/claude'), DUO_CODEX_BIN: path.join(ROOT, 'test/fake/codex'), DUO_MAX_TURNS: '4', DUO_GH_BIN: path.join(ROOT, 'test/fake/gh'), FAKE_GH_REMOTES: path.join(tmp, 'remotes'), DUO_PROJECTS: path.join(tmp, 'projects') },
+    env: { ...process.env, PORT: String(PORT), DUO_HOME: path.join(tmp, 'home'), DUO_CLAUDE_BIN: path.join(ROOT, 'test/fake/claude'), DUO_CODEX_BIN: path.join(ROOT, 'test/fake/codex'), DUO_MAX_TURNS: '4', FAKE_ARGS_LOG: path.join(tmp, 'args.log'), DUO_GH_BIN: path.join(ROOT, 'test/fake/gh'), FAKE_GH_REMOTES: path.join(tmp, 'remotes'), DUO_PROJECTS: path.join(tmp, 'projects') },
   });
   await waitFor(() => fetch(BASE + '/api/status').then((r) => r.ok).catch(() => false), 8000, 'server');
 });
@@ -244,4 +244,28 @@ test('empty GitHub remote: PR explains what to do, Apply + Push publishes the br
   assert.match(sh(bare, 'branch'), /main/);
   const again = await post(`/api/tasks/${id}/claude/pr`);
   assert.equal(again.status, 200);
+});
+
+test('model choice: passed to each CLI, validated, and shown on the task', async () => {
+  freshRepo();
+  const log = path.join(tmp, 'args.log'); fs.writeFileSync(log, '');
+  const r = await post('/api/tasks', { prompt: 'use models', repo, agents: ['claude', 'codex'], models: { claude: 'sonnet', codex: 'gpt-5-codex' } });
+  assert.equal(r.status, 200);
+  const t = await r.json();
+  assert.deepEqual(t.models, { claude: 'sonnet', codex: 'gpt-5-codex' });
+  await waitFor(async () => idle(await taskById(t.id)), 15000, 'models done');
+  const runs = fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((x) => x.args.includes('--model') || x.args.includes('-m'));
+  const claudeArgs = runs.find((x) => x.bin === 'claude').args, codexArgs = runs.find((x) => x.bin === 'codex').args;
+  assert.equal(claudeArgs[claudeArgs.indexOf('--model') + 1], 'sonnet');
+  assert.equal(codexArgs[codexArgs.indexOf('-m') + 1], 'gpt-5-codex');
+
+  // blank means "let the CLI decide": no flag at all
+  fs.writeFileSync(log, '');
+  const d = await (await post('/api/tasks', { prompt: 'default models', repo, agents: ['claude'], models: { claude: '  ' } })).json();
+  await waitFor(async () => idle(await taskById(d.id)), 15000, 'default done');
+  assert.ok(!fs.readFileSync(log, 'utf8').includes('--model'));
+
+  assert.equal((await post('/api/tasks', { prompt: 'x', repo, agents: ['claude'], models: { claude: '--dangerously-skip-permissions' } })).status, 400);
+  assert.equal((await post('/api/tasks', { prompt: 'x', repo, agents: ['claude'], models: { claude: 'a b; rm -rf' } })).status, 400);
+  assert.equal((await post('/api/tasks', { kind: 'team', prompt: 'x', repo, models: { codex: 'gpt-5' } })).status, 200);
 });

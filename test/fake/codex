@@ -2,6 +2,7 @@
 // Fake `codex` CLI for tests.
 const fs = require('fs');
 const a = process.argv.slice(2);
+if (process.env.FAKE_ARGS_LOG) require('fs').appendFileSync(process.env.FAKE_ARGS_LOG, JSON.stringify({ bin: 'codex', args: a }) + '\n');
 if (a[0] === 'login' && a[1] === 'status') { console.error('Logged in using ChatGPT'); process.exit(0); }
 
 // ---- team scenario (prompt contains the team preamble) ----

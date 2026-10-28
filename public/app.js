@@ -8,6 +8,7 @@ const state = {
   agents: new Set(store('agents') || ['claude', 'codex']),
   mode: store('mode') || 'build',
   kind: store('kind') || 'compete',
+  models: store('models') || { claude: '', codex: '' },
   tab: {}, // `${taskId}:${agent}` -> 'activity' | 'changes'
 };
 const isMac = /Mac|iPhone/.test(navigator.platform);
@@ -147,7 +148,8 @@ function rerun(t) {
   state.kind = t.team ? 'team' : 'compete'; store('kind', state.kind);
   if (!t.team) { state.agents = new Set(t.runs.map((r) => r.agent)); store('agents', [...state.agents]); state.mode = t.mode; store('mode', state.mode); syncMode(); }
   else { $('#roleClaude').value = t.team.roles.claude; $('#roleCodex').value = t.team.roles.codex; }
-  $('#repo').value = t.repo; checkRepo(); syncKind();
+  state.models = { claude: t.models?.claude || '', codex: t.models?.codex || '' }; store('models', state.models);
+  $('#repo').value = t.repo; checkRepo(); syncKind(); syncModelLabel();
   state.sel = null; renderList(); renderTop(); renderStage();
   $('#prompt').value = t.prompt; autosize(); $('#prompt').focus();
 }
@@ -222,7 +224,7 @@ function syncHead(t, r, el = laneEl(t, r)) {
   const u = r.usage || {};
   const elapsed = r.startedAt ? dur((r.endedAt || Date.now()) - r.startedAt) : '';
   const stats = [t.team && r.turns > 1 && `turn ${r.turns}`, elapsed, u.inputTokens != null && `${kfmt(u.inputTokens)} in`, u.outputTokens != null && `${kfmt(u.outputTokens)} out`].filter(Boolean);
-  $('.lane-head', el).innerHTML = `<span class="badge">${AGENTS[r.agent].letter}</span><span class="title">${AGENTS[r.agent].label}</span>${t.team ? `<span class="role-tag" title="${esc(t.team.roles[r.agent])}">${esc(t.team.roles[r.agent].split(':')[0])}</span>` : ''}
+  $('.lane-head', el).innerHTML = `<span class="badge">${AGENTS[r.agent].letter}</span><span class="title">${AGENTS[r.agent].label}</span>${t.models?.[r.agent] ? `<span class="model-tag" title="Model">${esc(t.models[r.agent])}</span>` : ''}${t.team ? `<span class="role-tag" title="${esc(t.team.roles[r.agent])}">${esc(t.team.roles[r.agent].split(':')[0])}</span>` : ''}
     <span class="status ${r.status}">${r.status}</span><span class="lane-stats">${stats.map((x) => `<span>${x}</span>`).join('')}</span>`;
   const foot = $('.lane-foot', el);
   foot.innerHTML = '';
@@ -466,6 +468,46 @@ function addItem(feed, it, scroll = true) {
   if (scroll && near) feed.scrollTop = feed.scrollHeight;
 }
 
+// ---------- model choice ----------
+// Presets are the stable Claude Code aliases. Anything else goes in the custom box, so new models work without an update.
+const MODEL_PRESETS = {
+  claude: [['', 'Default'], ['opus', 'Opus'], ['sonnet', 'Sonnet'], ['haiku', 'Haiku'], ['opusplan', 'Opus plans, Sonnet builds']],
+  codex: [['', 'Default']],
+};
+const modelShort = (a, v) => (v ? (MODEL_PRESETS[a].find((x) => x[0] === v)?.[1] || v) : 'auto');
+function syncModelLabel() {
+  const m = state.models;
+  const parts = state.kind === 'team' || state.agents.size === 2 ? ['claude', 'codex'] : [...state.agents];
+  $('#modelLabel').textContent = parts.map((a) => modelShort(a, m[a])).join(' · ') || 'Models';
+  $('#modelBtn').classList.toggle('set', Object.values(m).some(Boolean));
+}
+function closeModels() { $('#models').hidden = true; state.modelsOpen = false; }
+function openModels() {
+  const box = $('#models');
+  closeProj?.();
+  state.modelsOpen = true; box.hidden = false;
+  box.innerHTML = `<div class="mdl-head"><b>Models</b><button type="button" class="proj-x" aria-label="Close">×</button></div>
+    ${['claude', 'codex'].map((a) => {
+      const cur = state.models[a] || '';
+      const isPreset = MODEL_PRESETS[a].some((x) => x[0] === cur);
+      return `<div class="mdl-row ${a}"><div class="mdl-name"><i></i>${AGENTS[a].label}</div>
+        <div class="mdl-opts">${MODEL_PRESETS[a].map(([v, l]) => `<button type="button" class="mdl-opt${cur === v ? ' on' : ''}" data-a="${a}" data-v="${esc(v)}">${esc(l)}</button>`).join('')}
+        <input class="mdl-custom${!isPreset ? ' on' : ''}" data-a="${a}" value="${isPreset ? '' : esc(cur)}" placeholder="${a === 'claude' ? 'or a model id, e.g. claude-opus-5-5' : 'a model id, e.g. gpt-5-codex'}" spellcheck="false" aria-label="Custom ${AGENTS[a].label} model"></div></div>`;
+    }).join('')}
+    <p class="mdl-note">Default uses whatever each CLI is already set to. Anything your account can use works as a custom id. Applies to the next run.</p>`;
+  $('.proj-x', box).onclick = closeModels;
+  const save = () => { store('models', state.models); syncModelLabel(); };
+  box.querySelectorAll('.mdl-opt').forEach((b) => (b.onclick = () => {
+    state.models[b.dataset.a] = b.dataset.v; save(); openModels();
+  }));
+  box.querySelectorAll('.mdl-custom').forEach((i) => {
+    i.oninput = () => { state.models[i.dataset.a] = i.value.trim(); i.classList.toggle('on', !!i.value.trim()); save(); box.querySelectorAll(`.mdl-opt[data-a="${i.dataset.a}"]`).forEach((b) => b.classList.toggle('on', b.dataset.v === state.models[i.dataset.a])); };
+  });
+}
+$('#modelBtn').onclick = () => (state.modelsOpen ? closeModels() : openModels());
+document.addEventListener('mousedown', (e) => { if (state.modelsOpen && !e.target.closest('#models, #modelBtn')) closeModels(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && state.modelsOpen) closeModels(); });
+
 // ---------- GitHub: connect, pick / clone / create projects, PRs ----------
 function githubInstallHelp() {
   toast('Install the GitHub CLI: run "brew install gh" in a terminal (https://cli.github.com), then reload this page.', true);
@@ -516,6 +558,7 @@ function pickProject(dir) {
 }
 function closeProj() { $('#proj').hidden = true; state.projOpen = false; }
 async function openProj(tab = 'recent') {
+  if (state.modelsOpen) closeModels();
   const box = $('#proj');
   state.projOpen = true; state.projTab = tab;
   box.hidden = false;
@@ -662,6 +705,7 @@ $('#prompt').addEventListener('input', autosize);
 function syncChips() {
   document.querySelectorAll('.chip').forEach((c) => { const on = state.agents.has(c.dataset.agent); c.classList.toggle('on', on); c.setAttribute('aria-pressed', on); });
   const n = state.agents.size;
+  if (typeof syncModelLabel === 'function') syncModelLabel();
   if (state.kind === 'team') { $('#prompt').placeholder = 'Describe the overall goal. Both agents see it, plus their own part...'; $('#runBtn').disabled = false; return; }
   $('#prompt').placeholder = n === 2 ? 'Describe a task for both agents...' : n === 1 ? `Describe a task for ${AGENTS[[...state.agents][0]].label}...` : 'Pick at least one agent';
   $('#runBtn').disabled = n === 0;
@@ -708,7 +752,7 @@ async function submit(e) {
   try { if (Notification.permission === 'default') Notification.requestPermission(); } catch { /* unsupported */ }
   const btn = $('#runBtn'); btn.disabled = true;
   try {
-    const body = { prompt, repo, kind: state.kind, agents: [...state.agents], mode: state.mode, roles: { claude: $('#roleClaude').value, codex: $('#roleCodex').value } };
+    const body = { prompt, repo, kind: state.kind, agents: [...state.agents], mode: state.mode, roles: { claude: $('#roleClaude').value, codex: $('#roleCodex').value }, models: { ...state.models } };
     try { await api('/api/tasks', { method: 'POST', body }); }
     catch (err) {
       if (err.code !== 'needs_init' || !confirm(`${repo} is not a git repository.\n\nSet up git there and commit its current files so the agents can work on it?`)) throw err;
@@ -783,7 +827,7 @@ setInterval(renderList, 30000);
 
 // ---------- boot ----------
 (async function boot() {
-  syncChips(); syncMode(); syncKind(); fillRecent();
+  syncChips(); syncMode(); syncKind(); fillRecent(); syncModelLabel();
   await loadStatus();
   $('#repo').value = store('repo') || state.status?.cwd || '';
   checkRepo();

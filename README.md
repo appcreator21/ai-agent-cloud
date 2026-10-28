@@ -30,6 +30,11 @@ and a shared goal. Both work in **one shared worktree** and talk through a chann
 
 Modes (Compete): **Build** (agents may edit and run commands in their worktree) and **Plan** (read-only).
 
+## Choosing models
+
+The **Models** button in the composer sets the model for each agent (Claude Code: Default, Opus, Sonnet, Haiku, or any model id; Codex: Default or any model id).
+Default means "whatever the CLI is already set to". The choice is remembered, passed to the CLI as `--model` / `-m`, and shown on each lane.
+
 ## Starting from scratch
 
 Point the repo field at anything and Duo makes it workable: a brand-new empty GitHub clone, a `git init` with no commits,
