@@ -25,6 +25,16 @@ const MAX_ITEMS = 4000;
 
 fs.mkdirSync(WORKTREES, { recursive: true });
 
+// The server code on disk can change under a running server (git pull, rebuilding the Mac app).
+// /api/ping reports that, so the Mac app can replace a stale server instead of reusing it.
+const codeStamp = () => {
+  try {
+    const files = [__filename, ...fs.readdirSync(path.join(__dirname, 'lib')).map((f) => path.join(__dirname, 'lib', f))];
+    return Math.max(...files.map((f) => fs.statSync(f).mtimeMs));
+  } catch { return 0; }
+};
+const STARTED_STAMP = codeStamp();
+
 /** @type {Map<string, any>} */
 const tasks = new Map();
 const procs = new Map(); // `${taskId}:${agent}` -> child
@@ -511,7 +521,7 @@ const server = http.createServer(async (req, res) => {
       return fs.createReadStream(file).pipe(res);
     }
 
-    if (p === '/api/ping') return json(res, 200, { ok: true }); // cheap liveness check for the Mac app launcher
+    if (p === '/api/ping') return json(res, 200, { ok: true, pid: process.pid, stale: codeStamp() !== STARTED_STAMP }); // cheap liveness check for the Mac app launcher
 
     if (p === '/api/events') {
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' });

@@ -15,6 +15,10 @@ on run
 	set usingAppWindow to false
 	set windowSeen to false
 	
+	-- A server left over from an older build would be missing newer features; replace it.
+	if my isUp() and my isStale() then
+		my killOldServer()
+	end if
 	if not my isUp() then
 		if not my preflight() then
 			quit
@@ -112,6 +116,32 @@ on windowRunning()
 		return false
 	end try
 end windowRunning
+
+on pingText()
+	try
+		return do shell script "curl -sf --max-time 2 http://127.0.0.1:" & duoPort & "/api/ping"
+	on error
+		return ""
+	end try
+end pingText
+
+on isStale()
+	set t to my pingText()
+	-- Servers from before this check existed answer without a "stale" field: treat those as stale too.
+	return (t does not contain "\"stale\":false")
+end isStale
+
+on killOldServer()
+	try
+		set oldPid to do shell script "curl -sf --max-time 2 http://127.0.0.1:" & duoPort & "/api/ping | sed -n 's/.*\"pid\":\\([0-9][0-9]*\\).*/\\1/p'"
+		if oldPid is "" then set oldPid to do shell script "lsof -ti tcp:" & duoPort & " -sTCP:LISTEN | head -n 1"
+		if oldPid is not "" then do shell script "kill " & oldPid
+	end try
+	repeat 20 times
+		if not my isUp() then exit repeat
+		delay 0.25
+	end repeat
+end killOldServer
 
 on isUp()
 	try
