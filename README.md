@@ -49,6 +49,17 @@ an empty folder, or a folder that does not exist yet (it is created). Duo adds a
 branch from. A non-empty folder that is not a git repo asks before git is set up. With an empty GitHub repo, use **Apply**
 then **Push to GitHub** to publish `main`; after that **Open PR** works for later changes.
 
+## Make it a Mac app
+
+```bash
+cd ~/duo && npm run mac-app
+```
+
+This builds `~/Applications/Duo.app` with its own icon. Open it from Spotlight (Cmd+Space, "Duo") or drag it into the Dock.
+It starts the server if needed and opens Duo in its own chromeless window (Chrome, Brave, Edge, Chromium or Vivaldi; otherwise your
+default browser). Closing the window or pressing Cmd+Q stops the server. Logs go to `~/Library/Logs/Duo.log`.
+If you move the `duo` folder, run `npm run mac-app` again.
+
 ## GitHub
 
 Duo uses the GitHub CLI (`gh`) so it never handles a token. Install it once (`brew install gh`), then:
