@@ -552,6 +552,16 @@ const server = http.createServer(async (req, res) => {
       authCache.clear();
       return json(res, 200, { started: true });
     }
+    if (req.method === 'POST' && (m = p.match(/^\/api\/login\/(claude|codex)\/terminal$/))) {
+      // Opens Terminal.app already running the sign-in command (fixed strings only, no user input).
+      if (process.platform !== 'darwin') throw httpErr(400, 'Opening Terminal is only supported on macOS. Run the command yourself.');
+      const bin = process.env[m[1] === 'claude' ? 'DUO_CLAUDE_BIN' : 'DUO_CODEX_BIN'];
+      const cmd = m[1] === 'claude' ? 'claude' : 'codex login';
+      const script = bin ? `'${bin.replace(/'/g, "'\\''")}'${m[1] === 'codex' ? ' login' : ''}` : cmd;
+      const r = await run('osascript', ['-e', 'tell application "Terminal"', '-e', 'activate', '-e', `do script ${JSON.stringify(script)}`, '-e', 'end tell'], { timeout: 15000 });
+      if (!r.ok) throw httpErr(500, `Could not open Terminal: ${(r.stderr || '').trim().slice(0, 200)}. macOS may be asking permission for Duo to control Terminal; allow it and try again.`);
+      return json(res, 200, { ok: true });
+    }
     if (req.method === 'POST' && (m = p.match(/^\/api\/login\/(claude|codex)\/logout$/))) {
       const a = adapters[m[1]];
       await run(a.bin(), a.logoutArgs, { env: cleanEnv(m[1]) });

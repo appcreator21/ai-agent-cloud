@@ -49,6 +49,11 @@ an empty folder, or a folder that does not exist yet (it is created). Duo adds a
 branch from. A non-empty folder that is not a git repo asks before git is set up. With an empty GitHub repo, use **Apply**
 then **Push to GitHub** to publish `main`; after that **Open PR** works for later changes.
 
+## Signing in to Claude Code and Codex
+
+The Sign in buttons open a small box with the exact command (`claude` then `/login`, or `codex login`), a Copy button, an
+"Open Terminal for me" button on a Mac, and a check that notices the login on its own. Duo cannot drive those interactive logins itself.
+
 ## Make it a Mac app
 
 ```bash

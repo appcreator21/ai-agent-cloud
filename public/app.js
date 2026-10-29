@@ -67,9 +67,7 @@ async function loadStatus() {
     btn.disabled = !s.installed;
     btn.onclick = async () => {
       if (s.loggedIn) { await api(`/api/login/${id}/logout`, { method: 'POST' }); return loadStatus(); }
-      await api(`/api/login/${id}`, { method: 'POST' });
-      toast(`Finish signing in to ${a.label} in the browser window that opened.`);
-      let n = 0; const iv = setInterval(async () => { await loadStatus(); if (state.status[id].loggedIn || ++n > 40) clearInterval(iv); }, 3000);
+      openSignin(id);
     };
     el.append(btn);
     if (s.warning) el.insertAdjacentHTML('beforeend', `<div class="warnline">${esc(s.warning)}</div>`);
@@ -511,6 +509,44 @@ function openModels() {
 $('#modelBtn').onclick = () => (state.modelsOpen ? closeModels() : openModels());
 document.addEventListener('mousedown', (e) => { if (state.modelsOpen && !e.target.closest('#models, #modelBtn')) closeModels(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && state.modelsOpen) closeModels(); });
+
+// ---------- sign in to Claude Code / Codex ----------
+// The CLIs sign in interactively, so Duo shows the exact command, can open it in Terminal, and
+// watches for the login to appear instead of trying to drive the CLI itself.
+const SIGNIN = {
+  claude: { cmd: 'claude', steps: ['Open Terminal and run the command below.', 'Type <code>/login</code> and press Return, choose your Claude subscription, and finish in the browser.', 'Come back here. Duo notices on its own.'] },
+  codex: { cmd: 'codex login', steps: ['Open Terminal and run the command below.', 'Choose <b>Sign in with ChatGPT</b> and finish in the browser.', 'Come back here. Duo notices on its own.'] },
+};
+function openSignin(id) {
+  $('#signinModal')?.remove();
+  const info = SIGNIN[id], label = AGENTS[id].label, mac = /Mac/.test(navigator.platform);
+  const m = document.createElement('div');
+  m.className = 'palette'; m.id = 'signinModal';
+  m.innerHTML = `<div class="pal-box gh-box" role="dialog" aria-label="Sign in to ${esc(label)}">
+    <h3>Sign in to ${esc(label)}</h3>
+    <ol class="si-steps">${info.steps.map((x) => `<li>${x}</li>`).join('')}</ol>
+    <div class="si-cmd"><code>${esc(info.cmd)}</code><button class="mini" id="siCopy" type="button">Copy</button></div>
+    <div class="gh-actions">${mac ? '<button class="btn primary" id="siTerm" type="button">Open Terminal for me</button>' : ''}<button class="btn" id="siCheck" type="button">Check again</button></div>
+    <div class="gh-msg" id="siMsg">Waiting for you to sign in...</div><button class="mini gh-close" type="button">Close</button></div>`;
+  document.body.append(m);
+  const msg = $('#siMsg', m);
+  const close = () => { clearInterval(iv); m.remove(); };
+  const check = async () => {
+    await loadStatus();
+    if (state.status?.[id]?.loggedIn) { close(); toast(`${label} is signed in.`); return true; }
+    return false;
+  };
+  const iv = setInterval(check, 2500);
+  $('.gh-close', m).onclick = close;
+  m.addEventListener('mousedown', (e) => { if (e.target === m) close(); });
+  $('#siCopy', m).onclick = (e) => { navigator.clipboard?.writeText(info.cmd); e.target.textContent = 'Copied'; setTimeout(() => (e.target.textContent = 'Copy'), 1400); };
+  $('#siCheck', m).onclick = async () => { msg.classList.remove('bad'); msg.textContent = 'Checking...'; msg.textContent = (await check()) ? '' : 'Not signed in yet.'; };
+  const term = $('#siTerm', m);
+  if (term) term.onclick = async () => {
+    try { await api(`/api/login/${id}/terminal`, { method: 'POST' }); msg.textContent = 'Terminal opened. Finish signing in there.'; }
+    catch (e) { msg.textContent = e.message; msg.classList.add('bad'); }
+  };
+}
 
 // ---------- GitHub: connect, pick / clone / create projects, PRs ----------
 function githubInstallHelp() {

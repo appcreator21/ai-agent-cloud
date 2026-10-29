@@ -321,3 +321,8 @@ test('CI-aware: workflow checks are read, unsafe steps dropped, and passed to th
   const plan = await (await post('/api/tasks', { prompt: 'just look', repo, agents: ['claude'], mode: 'review' })).json();
   assert.equal(plan.ci, '');
 });
+
+test('sign-in helper: Terminal opener is macOS-only and validates the agent', async () => {
+  if (process.platform !== 'darwin') assert.equal((await post('/api/login/claude/terminal')).status, 400);
+  assert.equal((await post('/api/login/evil/terminal')).status, 404);
+});
