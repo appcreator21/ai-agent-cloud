@@ -102,6 +102,10 @@ async function repoInfo(dir) {
   let stat;
   try { stat = fs.statSync(abs); } catch { return { path: abs, exists: false, git: false, empty: true }; }
   if (!stat.isDirectory()) return { path: abs, exists: false, git: false };
+  try { fs.readdirSync(abs); } catch (e) {
+    // macOS privacy (TCC) blocks apps from Documents, Desktop, Downloads until you allow them
+    if (e.code === 'EPERM' || e.code === 'EACCES') return { path: abs, exists: true, git: false, blocked: true };
+  }
   const top = await git(abs, 'rev-parse', '--show-toplevel');
   // An empty folder inside some other repo is a fresh project, not part of that repo.
   if (!top.ok || (path.resolve(top.stdout.trim()) !== abs && dirIsEmpty(abs))) return { path: abs, exists: true, git: false, empty: dirIsEmpty(abs) };
@@ -125,6 +129,9 @@ async function initialCommit(dir) {
 
 // Starting from scratch: make a missing/empty folder, a fresh git repo or an empty clone workable.
 async function ensureRepo(repo, initGit) {
+  if (repo.blocked) {
+    throw httpErr(403, `macOS is not letting Duo open ${repo.path}. Allow it once: System Settings > Privacy & Security > Full Disk Access, add Duo.app, then quit and reopen Duo.`, 'blocked');
+  }
   if (!repo.exists) {
     try { fs.mkdirSync(repo.path, { recursive: true }); } catch (e) { throw httpErr(400, `Cannot create ${repo.path}: ${e.message}`); }
     repo = { ...repo, exists: true, empty: true };

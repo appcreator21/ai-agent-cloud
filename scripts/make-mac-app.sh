@@ -18,9 +18,17 @@ command -v node >/dev/null || echo "Note: node was not found in this shell. Inst
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-# 1. Compile the launcher with this folder's path baked in.
+# 0. macOS blocks apps from reading Documents, Desktop and Downloads unless you allow them, and
+#    that stops Node from even starting. So the app runs from a copy kept outside those folders.
+#    Run this command again after "git pull" to update the copy.
+RUNTIME="$HOME/Library/Application Support/Duo/runtime"
+rm -rf "$RUNTIME"
+mkdir -p "$RUNTIME"
+cp -R "$DIR/server.js" "$DIR/package.json" "$DIR/lib" "$DIR/public" "$RUNTIME/"
+
+# 1. Compile the launcher that starts the copy.
 tpl="$(cat "$DIR/scripts/Duo.applescript")"
-printf '%s\n' "${tpl//__DUO_DIR__/$DIR}" > "$WORK/Duo.applescript"
+printf '%s\n' "${tpl//__DUO_DIR__/$RUNTIME}" > "$WORK/Duo.applescript"
 mkdir -p "$(dirname "$APP")"
 rm -rf "$APP"
 osacompile -s -o "$APP" "$WORK/Duo.applescript"
@@ -44,5 +52,10 @@ touch "$APP"
 
 echo
 echo "Built $APP"
+echo "It runs from a copy in $RUNTIME (re-run this command after git pull)."
+echo
+echo "One-time step if your projects live in Documents, Desktop or Downloads:"
+echo "  System Settings > Privacy & Security > Full Disk Access > + > choose Duo.app"
+echo
 echo "Open it from Spotlight (Cmd+Space, type Duo), or drag it into your Dock."
 echo "Quit it with Cmd+Q to stop Duo. Logs: ~/Library/Logs/Duo.log"

@@ -58,7 +58,10 @@ cd ~/duo && npm run mac-app
 This builds `~/Applications/Duo.app` with its own icon. Open it from Spotlight (Cmd+Space, "Duo") or drag it into the Dock.
 It starts the server if needed and opens Duo in its own chromeless window (Chrome, Brave, Edge, Chromium or Vivaldi; otherwise your
 default browser). Closing the window or pressing Cmd+Q stops the server. Logs go to `~/Library/Logs/Duo.log`.
-If you move the `duo` folder, run `npm run mac-app` again.
+The app runs from a copy in `~/Library/Application Support/Duo/runtime`, so run `npm run mac-app` again after every `git pull` to update it.
+
+macOS blocks apps from reading Documents, Desktop and Downloads until you allow them. If your projects live there, give the app access once:
+System Settings > Privacy & Security > Full Disk Access > `+` > choose `Duo.app`, then quit and reopen it. Without that, Duo shows "blocked by macOS" next to the project.
 
 ## GitHub
 

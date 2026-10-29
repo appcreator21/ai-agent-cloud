@@ -737,6 +737,11 @@ async function checkRepo() {
   if (!v) { badge.textContent = ''; return null; }
   try {
     const r = await api('/api/repo?path=' + encodeURIComponent(v));
+    if (r.blocked) {
+      badge.className = 'repo-badge bad'; badge.textContent = 'blocked by macOS';
+      badge.title = 'Allow Duo in System Settings > Privacy & Security > Full Disk Access (add Duo.app), then quit and reopen it.';
+      return r;
+    }
     badge.className = 'repo-badge ' + (r.git ? (r.dirty ? 'warn' : 'ok') : r.empty ? 'ok' : 'warn');
     badge.textContent = !r.exists ? 'new folder' : !r.git ? (r.empty ? 'empty folder' : 'not git yet') : !r.hasCommits ? 'new repo' : r.dirty ? `${r.branch} - ${r.dirty} uncommitted` : r.branch;
     badge.title = !r.exists ? 'This folder will be created and set up as a git repo.' : !r.git ? (r.empty ? 'Will be set up as a git repo when you run.' : 'You will be asked before git is set up here.') : !r.hasCommits ? 'Empty repo: Duo adds a first commit when you run.' : '';
