@@ -25,6 +25,7 @@ and a shared goal. Both work in **one shared worktree** and talk through a chann
 - Agents message each other with a tiny script in `.duo/` (a file mailbox: Codex's sandbox has no network, so files are the reliable transport).
 - They agree on interfaces in `.duo/CONTRACT.md`. Messages show up live in the middle column, with a glowing packet flying between the two lanes.
 - An idle agent is woken automatically when it gets a message (no turn limit by default; the **Stop all** button halts everything, and `DUO_MAX_TURNS=<n>` sets an optional cap).
+- A team is never closed for good: after **Apply**, send a message in the channel and both agents wake up in the same thread (the team reopens, and Apply merges whatever they add). Only **Discard** or deleting the task removes the workspace.
 - You can message either agent or both at any time; agents can ask you with `to-you.js`, which highlights in amber.
 - One shared diff and one Apply/Discard for the whole team. The `.duo/` folder is never committed.
 

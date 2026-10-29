@@ -119,7 +119,21 @@ test('team: agents message each other, get re-woken, share one diff, apply merge
   assert.ok(fs.existsSync(path.join(repo, 'server/todos.js')) && fs.existsSync(path.join(repo, 'web/index.html')));
   assert.ok(!fs.existsSync(path.join(repo, '.duo')), 'mailbox not merged into repo');
   assert.match(sh(repo, 'log', '--oneline', '-3'), /Duo team/);
-  assert.equal((await post(`/api/tasks/${id}/message`, { to: 'all', text: 'late' })).status, 400, 'closed team rejects messages');
+  // a merged team is not closed for good: a new message wakes both agents in the same thread
+  const merged = await taskById(id);
+  assert.equal(merged.team.applied, true);
+  const turnsBefore = merged.runs.map((q) => q.turns);
+  assert.equal((await post(`/api/tasks/${id}/message`, { to: 'all', text: 'late question: how does the todo list work?' })).status, 200);
+  const woke = await waitFor(async () => { const x = await taskById(id); return x.runs.every((q, i) => q.turns > turnsBefore[i]) && idle(x) && x; }, 20000, 'merged team wakes');
+  assert.equal(woke.team.applied, false, 'reopened so the new work can be applied again');
+  assert.ok(woke.team.messages.some((m) => m.from === 'you' && /late question/.test(m.text)));
+  assert.equal((await post(`/api/tasks/${id}/team/apply`)).status, 200, 'can apply again');
+  assert.equal((await taskById(id)).team.applied, true);
+
+  // a discarded team cannot be woken: its workspace is gone
+  assert.equal((await post(`/api/tasks/${id}/team/discard`)).status, 200);
+  const gone = await post(`/api/tasks/${id}/message`, { to: 'all', text: 'anyone there?' });
+  assert.equal(gone.status, 400); assert.match((await gone.json()).error, /discarded/);
 });
 
 test('cancel kills a running agent promptly', async () => {

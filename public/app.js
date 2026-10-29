@@ -389,6 +389,11 @@ function syncChanFoot(t, el = chanEl(t)) {
   const foot = $('.chan-foot', el); foot.innerHTML = '';
   const add = (txt, cls, fn, dis) => { const b = document.createElement('button'); b.className = `btn ${cls || ''}`; b.textContent = txt; b.disabled = !!dis; b.onclick = fn; foot.append(b); };
   const note = (h) => foot.insertAdjacentHTML('beforeend', `<span class="note">${h}</span>`);
+  const inp = $('.chan-input input', el);
+  if (inp) {
+    inp.disabled = !!t.team.discarded;
+    inp.placeholder = t.team.discarded ? 'This workspace was discarded' : t.team.applied ? 'Ask a follow-up or give a new task. Both agents wake up here...' : 'Steer your agents...';
+  }
   if (t.team.discarded) return note('Discarded');
   if (t.team.applied) { note(`Merged into ${esc(t.baseBranch)}`); if (canGh(t)) add('Push to GitHub', 'primary', () => doPush(t)); return; }
   if (running) {

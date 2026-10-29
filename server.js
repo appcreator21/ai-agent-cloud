@@ -338,11 +338,23 @@ async function createTeamTask(task, repo, body) {
 }
 
 async function postMessage(task, to, text) {
-  if (!task.team || task.team.applied || task.team.discarded) throw httpErr(400, 'This team is closed');
+  if (!task.team) throw httpErr(400, 'Only team tasks have a channel');
+  if (task.team.discarded || !fs.existsSync(task.team.dir)) {
+    throw httpErr(400, 'This team\'s workspace was discarded, so it cannot be woken up. Start a new task, or use Run again.');
+  }
   text = String(text || '').trim();
   if (!text) throw httpErr(400, 'Message is empty');
   const targets = to === 'all' ? ['claude', 'codex'] : [to];
   if (!targets.every((x) => x === 'claude' || x === 'codex')) throw httpErr(400, 'Unknown recipient');
+  // A merged team is not finished for good: the workspace is still there, so reopen it and keep
+  // the same thread. Applying again merges whatever they add.
+  if (task.team.applied) {
+    task.team.applied = false;
+    task.team.prUrl = undefined;
+    task.team.reopened = (task.team.reopened || 0) + 1;
+    broadcast({ type: 'team', taskId: task.id, team: { applied: false, prUrl: null } });
+    save();
+  }
   for (const t of targets) team.appendMessage(task.team.dir, { from: 'you', to: t, text, ts: Date.now() });
   pump(task);
 }
@@ -418,7 +430,7 @@ async function commitRun(task, run) {
   const who = task.team ? 'Duo team' : adapters[run.agent].label;
   const c = await git(run.dir, '-c', 'user.name=Duo', '-c', 'user.email=duo@localhost',
     'commit', '-m', `${who}: ${task.prompt.split('\n')[0].slice(0, 70)}`);
-  if (!c.ok && !/nothing to commit/.test(c.stdout + c.stderr)) throw httpErr(500, c.stderr || c.stdout);
+  if (!c.ok && !/nothing (added )?to commit|no changes added to commit/.test(c.stdout + c.stderr)) throw httpErr(500, c.stderr || c.stdout);
 }
 
 async function prRun(task, run) {
