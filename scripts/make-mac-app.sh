@@ -42,13 +42,22 @@ for s in 16 32 128 256 512; do
   sips -z $((s*2)) $((s*2)) "$SRC" --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
 done
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/applet.icns"
+# Newer macOS builds an asset catalog into the applet and points CFBundleIconName at it, which wins
+# over the .icns file. Drop it so our icon is the one macOS shows.
+rm -f "$APP/Contents/Resources/Assets.car"
 
 # 3. Name it Duo and make sure the Dock shows it as a normal app.
 PLIST="$APP/Contents/Info.plist"
 plutil -replace CFBundleName -string "Duo" "$PLIST"
 plutil -replace CFBundleDisplayName -string "Duo" "$PLIST" 2>/dev/null || plutil -insert CFBundleDisplayName -string "Duo" "$PLIST"
 plutil -replace CFBundleIdentifier -string "local.duo.app" "$PLIST"
+plutil -remove CFBundleIconName "$PLIST" 2>/dev/null || true
+plutil -replace CFBundleIconFile -string "applet" "$PLIST"
+# Editing the bundle invalidates its signature; sign it again (ad hoc, local only).
+codesign --force --deep -s - "$APP" >/dev/null 2>&1 || true
 touch "$APP"
+# Make Finder and the Dock forget any cached generic icon for this path.
+killall Dock >/dev/null 2>&1 || true
 
 echo
 echo "Built $APP"
