@@ -16,6 +16,10 @@ on run
 	set windowSeen to false
 	
 	if not my isUp() then
+		if not my preflight() then
+			quit
+			return
+		end if
 		try
 			set cmd to "cd " & quoted form of duoDir & " && PORT=" & duoPort & " exec node server.js"
 			set serverPid to do shell script "mkdir -p \"$HOME/Library/Logs\"; (/bin/zsh -lic " & quoted form of cmd & " >> \"$HOME/Library/Logs/Duo.log\" 2>&1 & echo $!)"
@@ -30,7 +34,11 @@ on run
 			delay 0.5
 		end repeat
 		if not my isUp() then
-			display alert "Duo did not start" message "Look at ~/Library/Logs/Duo.log for details. Make sure Node 20 or newer is installed (brew install node)." as critical
+			set tailText to ""
+			try
+				set tailText to do shell script "tail -n 12 \"$HOME/Library/Logs/Duo.log\" 2>/dev/null | cut -c1-160"
+			end try
+			display alert "Duo did not start" message "The server did not answer in 30 seconds. Last lines of ~/Library/Logs/Duo.log:" & return & return & tailText as critical
 			my cleanup()
 			quit
 			return
@@ -38,6 +46,27 @@ on run
 	end if
 	my openWindow()
 end run
+
+-- Checks the folder, Node and its version in the same kind of shell the server will run in,
+-- so a failure says exactly what is wrong instead of just "did not start".
+on preflight()
+	set checkCmd to "cd " & quoted form of duoDir & " || exit 11; command -v node >/dev/null || exit 12; node -e 'process.exit(+process.versions.node.split(\".\")[0]>=20?0:1)' || exit 13"
+	try
+		do shell script "/bin/zsh -lic " & quoted form of checkCmd
+		return true
+	on error errMsg number n
+		if n is 11 then
+			display alert "Duo cannot open its folder" message "macOS is blocking access to " & duoDir & ". If it is in Documents, Desktop or Downloads, allow Duo under System Settings > Privacy & Security > Files and Folders (or Full Disk Access), then open Duo again." as critical
+		else if n is 12 then
+			display alert "Node is not installed" message "Duo needs Node 20 or newer, and your Terminal setup could not find it. Run this in Terminal, then open Duo again:" & return & return & "brew install node" as critical
+		else if n is 13 then
+			display alert "Node is too old" message "Duo needs Node 20 or newer. Run this in Terminal, then open Duo again:" & return & return & "brew upgrade node" as critical
+		else
+			display alert "Duo could not start" message errMsg as critical
+		end if
+		return false
+	end try
+end preflight
 
 on reopen
 	my openWindow()
@@ -86,7 +115,7 @@ end windowRunning
 
 on isUp()
 	try
-		do shell script "curl -s -o /dev/null --max-time 1 http://127.0.0.1:" & duoPort & "/api/status"
+		do shell script "curl -sf -o /dev/null --max-time 2 http://127.0.0.1:" & duoPort & "/api/ping"
 		return true
 	on error
 		return false

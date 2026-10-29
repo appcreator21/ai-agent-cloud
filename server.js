@@ -504,6 +504,8 @@ const server = http.createServer(async (req, res) => {
       return fs.createReadStream(file).pipe(res);
     }
 
+    if (p === '/api/ping') return json(res, 200, { ok: true }); // cheap liveness check for the Mac app launcher
+
     if (p === '/api/events') {
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' });
       res.write(': hi\n\n');
