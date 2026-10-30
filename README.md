@@ -43,6 +43,13 @@ agents can still miss something, so keep CI on pull requests as the safety net.
 The **Models** button in the composer sets the model for each agent (Claude Code: Default, Opus, Sonnet, Haiku, or any model id; Codex: Default or any model id).
 Default means "whatever the CLI is already set to". The choice is remembered, passed to the CLI as `--model` / `-m`, and shown on each lane.
 
+## Focus and full screen
+
+Every pane (each agent and the channel) has an expand button. Click it and that pane fills the screen as a comfortable reading column,
+while the others fold into slim rails showing their status (the channel rail shows unread messages). Click a rail to switch focus.
+The full screen button then hides the sidebar, header and composer, and uses the browser's full screen too (Ctrl/Cmd+Shift+F).
+Esc steps back one level: full screen first, then focus. All of it is also in the command palette.
+
 ## Starting from scratch
 
 Point the repo field at anything and Duo makes it workable: a brand-new empty GitHub clone, a `git init` with no commits,

@@ -662,3 +662,98 @@ button.proj-item { display: block; }
 .chan-foot .note { flex: 1 1 100%; }
 .chan-foot .btn { flex: 1 1 auto; text-align: center; padding-inline: 10px; }
 .chan-foot .btn.primary { flex: 2 1 auto; }
+
+/* =====================================================================
+   Focus and full screen. Panes are flex children so their width animates;
+   a collapsed pane becomes a slim rail you can click to bring it back.
+   ===================================================================== */
+.lanes { display: flex; gap: 16px; }
+.lanes > .lane, .lanes > .channel {
+  flex: 1 1 0; min-width: 0;
+  transition: flex-grow .6s var(--ease), flex-basis .6s var(--ease), border-color .3s, box-shadow .4s;
+}
+.lanes.team > .channel { flex: 0 0 340px; }
+.lanes.has-focus > .collapsed { flex: 0 0 68px; cursor: pointer; }
+.lanes.has-focus > .focused { flex: 1 1 0; }
+.lanes.has-focus > .focused { box-shadow: var(--hi), 0 40px 90px -40px rgba(0,0,0,.85), 0 0 80px -34px color-mix(in srgb, var(--c, #fff) 55%, transparent); }
+
+.pane-btns { display: inline-flex; gap: 6px; margin-left: 8px; flex: none; }
+.chan-head .pane-btns { margin-left: 4px; }
+.icon-btn {
+  width: 30px; height: 30px; display: grid; place-items: center; padding: 0; border-radius: 9px; cursor: pointer;
+  background: var(--glass); border: 1px solid var(--hair); color: var(--muted); transition: all .18s var(--ease);
+}
+.icon-btn:hover { color: var(--ink); background: var(--glass-3); border-color: var(--hair-2); transform: translateY(-1px); }
+.icon-btn:active { transform: scale(.94); }
+.pane-btns [data-immersive] { display: none; }
+.focused .pane-btns [data-immersive] { display: grid; }
+.pane-btns .i-collapse { display: none; } .focused .pane-btns .i-collapse { display: grid; place-items: center; }
+.focused .pane-btns .i-expand { display: none; } .pane-btns .i-expand { display: grid; place-items: center; }
+.lane-head .pane-btns { order: 99; }
+
+/* the rail a collapsed pane turns into */
+.rail {
+  position: absolute; inset: 0; z-index: 6; display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 18px 0 16px;
+  opacity: 0; pointer-events: none; cursor: pointer; outline: none; border-radius: inherit;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--c) 12%, transparent), transparent 55%);
+  transition: opacity .3s ease, background .2s;
+}
+.collapsed > .rail { opacity: 1; pointer-events: auto; transition-delay: .25s; }
+.collapsed > .rail:hover, .collapsed > .rail:focus-visible { background: linear-gradient(180deg, color-mix(in srgb, var(--c) 24%, transparent), color-mix(in srgb, var(--c) 6%, transparent)); }
+.collapsed > :not(.rail):not(.ring) { opacity: 0; pointer-events: none; transition: opacity .18s ease; }
+.rail .badge { width: 30px; height: 30px; border-radius: 10px; display: grid; place-items: center; font: 600 12px var(--mono); color: #0a0b0d; background: var(--c); box-shadow: 0 0 22px -2px color-mix(in srgb, var(--c) 70%, transparent), inset 0 1px 0 rgba(255,255,255,.4); }
+.rail .badge.chat { background: var(--glass-3); color: var(--ink); box-shadow: var(--hi); }
+.rail .led { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); transition: all .3s; }
+.lane.is-running .rail .led { background: var(--c); box-shadow: 0 0 12px var(--c); animation: pulse 1.2s ease-in-out infinite; }
+.rail .rname { writing-mode: vertical-rl; transform: rotate(180deg); font: 500 12.5px var(--sans); letter-spacing: .04em; color: var(--ink-2); white-space: nowrap; }
+.rail .rs { writing-mode: vertical-rl; transform: rotate(180deg); font: 500 10px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--faint); white-space: nowrap; }
+.rail .rexp { margin-top: auto; color: var(--faint); transition: color .2s, transform .25s var(--ease); }
+.rail:hover .rexp { color: var(--ink); transform: scale(1.15); }
+.rail .unread { min-width: 20px; height: 20px; padding: 0 6px; border-radius: 999px; display: grid; place-items: center; font: 600 11px var(--mono); color: #08090b; background: var(--ink); box-shadow: 0 0 16px rgba(255,255,255,.5); animation: rise .3s var(--ease) both; }
+.rail .unread[hidden] { display: none; }
+
+/* a focused pane reads like a document: content stays in a comfortable column */
+.focused > .lane-head, .focused > .tabs, .focused > .lane-foot, .focused > .chan-head, .focused > .chan-tabs, .focused > .chan-input, .focused > .comm {
+  padding-inline: calc(max(0px, (100% - 920px) / 2) + 20px);
+}
+.focused > .tabs::after, .focused > .lane-foot::before { left: calc(max(0px, (100% - 920px) / 2) + 20px); right: calc(max(0px, (100% - 920px) / 2) + 20px); }
+.focused > .now, .focused > .touched { margin-inline: calc(max(0px, (100% - 920px) / 2) + 20px); }
+.focused > .feed { padding-inline: calc(max(0px, (100% - 920px) / 2) + 42px) calc(max(0px, (100% - 920px) / 2) + 20px); }
+.focused > .feed::before { left: calc(max(0px, (100% - 920px) / 2) + 26px); }
+.focused > .chan-msgs { padding-inline: calc(max(0px, (100% - 860px) / 2) + 18px); gap: 14px; }
+.focused > .diff { padding-inline: calc(max(0px, (100% - 1000px) / 2)); }
+.focused .item.text { font-size: 15px; line-height: 1.7; }
+.focused .item.tool { font-size: 13px; }
+.focused .tool-sum { font-size: 12.5px; }
+.focused .msg { max-width: 76%; }
+.focused .msg-body { font-size: 14.5px; padding: 10px 14px; }
+.focused .lane-head .title { font-size: 16px; }
+.focused .lane-head .badge { width: 32px; height: 32px; border-radius: 11px; font-size: 13px; }
+.focused > .lane-head { padding-top: 22px; padding-bottom: 16px; }
+.focused > .chan-head { padding-top: 22px; }
+.focused > .lane-foot, .focused > .chan-foot { padding-bottom: 20px; }
+.focused > .chan-foot .btn { flex: 0 1 auto; padding-inline: 18px; }
+.focused > .chan-foot .btn.primary { flex: 0 1 auto; }
+
+/* immersive: only the work, edge to edge */
+body.immersive .app { grid-template-columns: 1fr; }
+body.immersive .sidebar, body.immersive .topbar, body.immersive .composer { display: none; }
+body.immersive .stage { padding: 20px 24px 24px; }
+body.immersive .main { animation: fadein .35s both; }
+
+/* narrow screens: no rails, the focused pane simply takes the whole row */
+@media (max-width: 1200px) {
+  .lanes.team { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .lanes.team > .channel { grid-column: 1 / -1; grid-row: 2; min-height: 320px; flex: none; }
+  .lanes.has-focus > .collapsed { display: none; }
+  .lanes.has-focus > .focused { grid-column: 1 / -1; grid-row: auto; }
+}
+@media (max-width: 900px) {
+  .lanes:not(.team) { flex-direction: column; overflow: auto; }
+  .lanes:not(.team) > .lane { flex: none; min-height: 380px; }
+}
+@media (prefers-reduced-motion: reduce) { .lanes > .lane, .lanes > .channel { transition: none; } }
+
+/* narrow team lanes: buttons stay on the title row, the numbers wrap to a line of their own */
+.team-lane:not(.focused) .lane-head .pane-btns { order: 2; margin-left: auto; }
+.team-lane:not(.focused) .lane-head .lane-stats { order: 3; flex: 1 0 100%; margin-left: 0; }

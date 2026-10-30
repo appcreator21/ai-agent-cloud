@@ -8,6 +8,7 @@ const state = {
   agents: new Set(store('agents') || ['claude', 'codex']),
   mode: store('mode') || 'build',
   kind: store('kind') || 'compete',
+  focus: null, immersive: false, unread: 0,
   models: store('models') || { claude: '', codex: '' },
   tab: {}, // `${taskId}:${agent}` -> 'activity' | 'changes'
 };
@@ -115,6 +116,7 @@ const TEAM_IDEAS = [
 const taskOf = (id) => state.tasks.find((t) => t.id === id);
 
 function select(id) {
+  if (id !== state.sel) { state.focus = null; state.unread = 0; }
   state.sel = id;
   renderList(); renderTop(); renderStage();
 }
@@ -174,11 +176,13 @@ function renderStage() {
     const run = (a) => t.runs.find((r) => r.agent === a);
     lanes.append(buildLane(t, run('claude')), buildChannel(t), buildLane(t, run('codex')));
     const layer = document.createElement('div'); layer.className = 'flight-layer'; lanes.append(layer);
+    applyFocus();
     return;
   }
   stage.innerHTML = '<div class="lanes"></div>';
   const lanes = $('.lanes', stage);
   for (const r of t.runs) lanes.append(buildLane(t, r));
+  applyFocus();
 }
 
 function buildLane(t, r) {
@@ -187,7 +191,9 @@ function buildLane(t, r) {
   el.id = `lane-${t.id}-${r.agent}`;
   el.innerHTML = `<div class="lane-head"></div><div class="now" hidden></div><div class="touched" hidden></div>
     <div class="tabs"><button class="tab" data-tab="activity">Activity</button><button class="tab" data-tab="changes">Changes<span class="count"></span></button></div>
-    <div class="feed"></div><div class="diff" hidden></div><div class="lane-foot"></div>`;
+    <div class="feed"></div><div class="diff" hidden></div><div class="lane-foot"></div>
+    <div class="rail" data-focus="${r.agent}" role="button" tabindex="0" aria-label="Show ${AGENTS[r.agent].label}" title="Show ${AGENTS[r.agent].label}">
+      <span class="badge">${AGENTS[r.agent].letter}</span><i class="led"></i><span class="rname">${AGENTS[r.agent].label}</span><span class="rs">${r.status}</span><span class="rexp">${ICON.expand}</span></div>`;
   el.querySelectorAll('.tab').forEach((b) => (b.onclick = () => { state.tab[`${t.id}:${r.agent}`] = b.dataset.tab; syncTab(t, r); }));
   const feed = $('.feed', el);
   for (const it of r.items) addItem(feed, it, false);
@@ -223,7 +229,8 @@ function syncHead(t, r, el = laneEl(t, r)) {
   const elapsed = r.startedAt ? dur((r.endedAt || Date.now()) - r.startedAt) : '';
   const stats = [t.team && r.turns > 1 && `turn ${r.turns}`, elapsed, u.inputTokens != null && `${kfmt(u.inputTokens)} in`, u.outputTokens != null && `${kfmt(u.outputTokens)} out`].filter(Boolean);
   $('.lane-head', el).innerHTML = `<span class="badge">${AGENTS[r.agent].letter}</span><span class="title">${AGENTS[r.agent].label}</span>${t.models?.[r.agent] ? `<span class="model-tag" title="Model">${esc(t.models[r.agent])}</span>` : ''}${t.team ? `<span class="role-tag" title="${esc(t.team.roles[r.agent])}">${esc(t.team.roles[r.agent].split(':')[0])}</span>` : ''}
-    <span class="status ${r.status}">${r.status}</span><span class="lane-stats">${stats.map((x) => `<span>${x}</span>`).join('')}</span>`;
+    <span class="status ${r.status}">${r.status}</span><span class="lane-stats">${stats.map((x) => `<span>${x}</span>`).join('')}</span>${paneBtns(r.agent, AGENTS[r.agent].label)}`;
+  const rs = $('.rail .rs', el); if (rs) rs.textContent = r.status;
   const foot = $('.lane-foot', el);
   foot.innerHTML = '';
   const add = (txt, cls, fn, dis) => { const b = document.createElement('button'); b.className = `btn ${cls || ''}`; b.textContent = txt; b.disabled = !!dis; b.onclick = fn; foot.append(b); return b; };
@@ -273,13 +280,15 @@ const CHAT_ICON = '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" s
 function buildChannel(t) {
   const el = document.createElement('section');
   el.className = 'channel'; el.id = `chan-${t.id}`; el.style.setProperty('--c', 'var(--ink)');
-  el.innerHTML = `<div class="chan-head"><span class="ttl">${CHAT_ICON}Channel</span><span class="status"></span></div>
+  el.innerHTML = `<div class="chan-head"><span class="ttl">${CHAT_ICON}Channel</span><span class="status"></span>${paneBtns('chan', 'the channel')}</div>
     <div class="comm" aria-hidden="true"><div class="node claude"><i></i><div><b>Claude</b><small>idle</small></div></div><div class="wire"><span class="pulse"></span></div><div class="node codex"><div><b>Codex</b><small>idle</small></div><i></i></div></div>
     <div class="chan-tabs tabs"><button class="tab" data-tab="messages">Messages</button><button class="tab" data-tab="changes">Changes<span class="count"></span></button></div>
     <div class="chan-msgs"></div><div class="diff" hidden></div>
     <form class="chan-input"><select aria-label="Send to"><option value="all">Everyone</option><option value="claude">Claude</option><option value="codex">Codex</option></select>
       <input placeholder="Steer your agents..." aria-label="Message" autocomplete="off"><button class="btn primary" type="submit">Send</button></form>
-    <div class="lane-foot chan-foot"></div>`;
+    <div class="lane-foot chan-foot"></div>
+    <div class="rail" data-focus="chan" role="button" tabindex="0" aria-label="Show the channel" title="Show the channel">
+      <span class="badge chat">${CHAT_ICON}</span><span class="rname">Channel</span><span class="unread" hidden></span><span class="rexp">${ICON.expand}</span></div>`;
   el.querySelectorAll('.tab').forEach((b) => (b.onclick = () => { state.tab[`${t.id}:team`] = b.dataset.tab; syncChanTab(t); }));
   $('.chan-input', el).onsubmit = async (e) => {
     e.preventDefault();
@@ -515,6 +524,64 @@ $('#modelBtn').onclick = () => (state.modelsOpen ? closeModels() : openModels())
 document.addEventListener('mousedown', (e) => { if (state.modelsOpen && !e.target.closest('#models, #modelBtn')) closeModels(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && state.modelsOpen) closeModels(); });
 
+// ---------- focus and full screen ----------
+const ICON = {
+  expand: '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5L9.2 6.8M2.5 13.5l4.3-4.3"/></svg>',
+  collapse: '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 7H9V3M3 9h4v4M9 7l4.2-4.2M7 9l-4.2 4.2"/></svg>',
+  full: '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10"/></svg>',
+};
+const paneBtns = (key, label) => `<span class="pane-btns">
+  <button class="icon-btn" type="button" data-immersive title="Full screen: hide everything else (Ctrl+Shift+F)" aria-label="Full screen">${ICON.full}</button>
+  <button class="icon-btn" type="button" data-focus="${key}" title="Focus ${esc(label)}. Press Esc to go back." aria-label="Focus ${esc(label)}"><span class="i-expand">${ICON.expand}</span><span class="i-collapse">${ICON.collapse}</span></button></span>`;
+
+function applyFocus() {
+  const lanes = $('.lanes');
+  document.body.classList.toggle('immersive', state.immersive);
+  if (!lanes) return;
+  const panes = [...lanes.children].filter((c) => c.matches('.lane, .channel'));
+  const keyOf = (p) => (p.classList.contains('channel') ? 'chan' : p.classList.contains('claude') ? 'claude' : 'codex');
+  if (state.focus && !panes.some((p) => keyOf(p) === state.focus)) state.focus = null;
+  lanes.classList.toggle('has-focus', !!state.focus);
+  for (const p of panes) {
+    const k = keyOf(p);
+    p.classList.toggle('focused', state.focus === k);
+    p.classList.toggle('collapsed', !!state.focus && state.focus !== k);
+  }
+  const u = $('.channel .unread');
+  if (u) { u.hidden = !state.unread; u.textContent = state.unread > 9 ? '9+' : String(state.unread); }
+}
+function setFocus(key, force) {
+  state.focus = (!force && state.focus === key) ? null : key;
+  if (state.focus === 'chan') state.unread = 0;
+  applyFocus();
+  // once the pane has finished growing, show the newest content
+  setTimeout(() => document.querySelectorAll('.focused .feed, .focused .chan-msgs').forEach((el) => { el.style.scrollBehavior = 'auto'; el.scrollTop = el.scrollHeight; el.style.scrollBehavior = ''; }), 560);
+}
+function toggleImmersive() {
+  state.immersive = !state.immersive;
+  applyFocus();
+  try {
+    if (state.immersive) { document.documentElement.requestFullscreen?.().catch(() => {}); toast('Full screen. Press Esc to exit.'); }
+    else if (document.fullscreenElement) document.exitFullscreen?.();
+  } catch { /* the layout change still applies without native full screen */ }
+}
+document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && state.immersive) { state.immersive = false; applyFocus(); } });
+document.addEventListener('click', (e) => {
+  if (e.target.closest('[data-immersive]')) return toggleImmersive();
+  const f = e.target.closest('[data-focus]');
+  if (f) setFocus(f.dataset.focus);
+});
+document.addEventListener('keydown', (e) => {
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.classList?.contains('rail')) { e.preventDefault(); setFocus(e.target.dataset.focus); }
+  if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'f') { e.preventDefault(); toggleImmersive(); }
+});
+// Esc steps back one level: overlays first (they close themselves), then full screen, then focus.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if ($('#palette') || $('#ghModal') || $('#signinModal') || state.projOpen || state.modelsOpen) return;
+  if (state.immersive) toggleImmersive(); else if (state.focus) setFocus(null);
+}, true);
+
 // ---------- sign in to Claude Code / Codex ----------
 // The CLIs sign in interactively, so Duo shows the exact command, can open it in Terminal, and
 // watches for the login to appear instead of trying to drive the CLI itself.
@@ -709,7 +776,10 @@ function connect() {
     const t = taskOf(ev.taskId);
     if (t && ev.type === 'message') {
       t.team.messages.push(ev.msg);
-      if (state.sel === t.id && chanEl(t)) { addMessage($('.chan-msgs', chanEl(t)), ev.msg); queueFlight(t, ev.msg); }
+      if (state.sel === t.id && chanEl(t)) {
+        addMessage($('.chan-msgs', chanEl(t)), ev.msg); queueFlight(t, ev.msg);
+        if (state.focus && state.focus !== 'chan') { state.unread += 1; applyFocus(); }
+      }
       return;
     }
     if (t && ev.type === 'team') {
@@ -837,6 +907,11 @@ function openPalette() {
     { t: 'New task', k: 'N', run: () => $('#newTask').click() },
     { t: 'Switch to Compete mode', run: () => { state.kind = 'compete'; store('kind', 'compete'); syncKind(); } },
     { t: 'Switch to Team mode', run: () => { state.kind = 'team'; store('kind', 'team'); syncKind(); } },
+    { t: 'Focus Claude Code (full pane)', run: () => setFocus('claude', true) },
+    { t: 'Focus Codex (full pane)', run: () => setFocus('codex', true) },
+    { t: 'Focus the channel (full pane)', run: () => setFocus('chan', true) },
+    { t: 'Exit focus', run: () => setFocus(null, true) },
+    { t: 'Full screen (hide everything else)', k: 'Ctrl Shift F', run: () => toggleImmersive() },
     { t: 'Sign in / out: Claude Code', run: () => document.querySelector('.acct.claude .mini')?.click() },
     { t: 'Sign in / out: Codex', run: () => document.querySelector('.acct.codex .mini')?.click() },
     ...state.tasks.map((x) => ({ t: x.prompt.slice(0, 80), k: x.team ? 'team' : 'compete', run: () => select(x.id) })),
