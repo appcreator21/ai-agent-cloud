@@ -14,12 +14,16 @@ const { adapters, parseLine, hintFor } = require('./lib/agents');
 const team = require('./lib/team');
 const gh = require('./lib/github');
 const ci = require('./lib/ci');
+const shadow = require('./lib/shadow');
 
 const PORT = Number(process.env.PORT || 4317);
 const HOST = '127.0.0.1';
 const DATA_DIR = process.env.DUO_HOME || path.join(os.homedir(), '.duo');
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
 const WORKTREES = path.join(DATA_DIR, 'worktrees');
+const SHADOWS = path.join(DATA_DIR, 'shadow');
+const shadowOf = (task) => path.join(SHADOWS, `${task.id}.git`);
+const folderOf = (task) => (task.team ? task.team.dir : task.runs[0].dir);
 const PUBLIC = path.join(__dirname, 'public');
 const MAX_ITEMS = 4000;
 
@@ -105,6 +109,35 @@ function leakedKeys() {
   return out;
 }
 
+const expandPath = (p) => path.resolve(String(p || '').replace(/^~(?=$|\/)/, os.homedir()));
+
+// "Work in place": the chosen folder itself, git or not. Refuse folders so broad that a
+// snapshot would swallow the whole machine.
+async function folderInfo(dir) {
+  const abs = expandPath(dir);
+  const home = os.homedir();
+  const containers = ['Desktop', 'Documents', 'Downloads', 'Library', 'Movies', 'Music', 'Pictures', 'Applications'].map((d) => path.join(home, d));
+  if (abs === path.parse(abs).root || abs === home || containers.includes(abs) || home.startsWith(abs + path.sep) || path.relative(home, abs).split(path.sep).length < 1) {
+    throw httpErr(400, 'That folder is too broad to work in directly. Pick a project folder inside it.');
+  }
+  let st = null;
+  try { st = fs.statSync(abs); } catch { /* does not exist yet */ }
+  if (st && !st.isDirectory()) throw httpErr(400, `${abs} is a file, not a folder.`);
+  if (!st) {
+    try { fs.mkdirSync(abs, { recursive: true }); } catch (e) { throw httpErr(400, `Cannot create ${abs}: ${e.message}`); }
+  }
+  try { fs.readdirSync(abs); } catch (e) {
+    if (e.code === 'EPERM' || e.code === 'EACCES') {
+      throw httpErr(403, `macOS is not letting Duo open ${abs}. Allow it once: System Settings > Privacy & Security > Full Disk Access, add Duo.app, then quit and reopen Duo.`, 'blocked');
+    }
+    throw httpErr(400, e.message);
+  }
+  const top = await git(abs, 'rev-parse', '--show-toplevel');
+  const isGit = top.ok && path.resolve(top.stdout.trim()) === abs;
+  const branch = isGit ? (await git(abs, 'symbolic-ref', '--short', 'HEAD')).stdout.trim() : '';
+  return { path: abs, git: isGit, branch, fresh: !st };
+}
+
 const dirIsEmpty = (d) => { try { return fs.readdirSync(d).length === 0; } catch { return false; } };
 
 async function repoInfo(dir) {
@@ -187,6 +220,11 @@ const changedOf = async (dir) =>
 // Compete mode: one isolated worktree per agent.
 async function startRun(task, run) {
   setStatus(task, run, 'running', { startedAt: Date.now() });
+  if (task.inplace) {
+    run.dir = task.repo;
+    pushItem(task, run, { kind: 'meta', text: `${adapters[run.agent].label} is editing ${task.repo} directly` });
+    return launch(task, run, task.ci ? `${task.prompt}\n\n${task.ci}` : task.prompt);
+  }
 
   const repo = await repoInfo(task.repo);
   const branch = `duo/${task.id}-${run.agent}`;
@@ -240,7 +278,7 @@ function launch(task, run, prompt) {
     if (run.status === 'cancelled') return;
     if (timedOut) pushItem(task, run, { kind: 'error', text: `Stopped: this turn ran longer than ${TURN_TIMEOUT_MS / 60000} minutes.` });
     else if (code !== 0 && errBuf.trim()) pushItem(task, run, { kind: 'error', text: errBuf.trim() });
-    const changed = (await changedOf(run.dir)).length;
+    const changed = task.inplace ? (await shadow.changedFiles(shadowOf(task), folderOf(task))).length : (await changedOf(run.dir)).length;
     const failed = code !== 0 || state.failed;
     setStatus(task, run, failed ? 'failed' : 'done', { endedAt: Date.now(), changed: task.team ? undefined : changed, exitCode: code, signal, turns: run.turns });
     if (task.team) {
@@ -316,11 +354,29 @@ async function startTurn(task, run, pending) {
   } else {
     pushItem(task, run, { kind: 'meta', text: `${adapters[run.agent].label} joined the team: ${task.team.roles[run.agent]}` });
   }
-  const files = (await changedOf(run.dir)).map((l) => l.slice(3));
+  const files = task.inplace ? await shadow.changedFiles(shadowOf(task), folderOf(task)) : (await changedOf(run.dir)).map((l) => l.slice(3));
   launch(task, run, team.buildPrompt({ agent: run.agent, goal: task.prompt, roles: task.team.roles, turn, pending, changedFiles: files, ci: task.ci }));
 }
 
 async function createTeamTask(task, repo, body) {
+  if (task.inplace) {
+    team.setupTeamDir(repo.path);
+    if (repo.git) { // keep the mailbox out of `git status` without touching tracked files
+      const ex = await git(repo.path, 'rev-parse', '--git-path', 'info/exclude');
+      const file = path.resolve(repo.path, ex.stdout.trim());
+      try { fs.mkdirSync(path.dirname(file), { recursive: true }); if (!/^\.duo\/?$/m.test(fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '')) fs.appendFileSync(file, '\n.duo/\n'); } catch { /* best effort */ }
+    }
+    const r = body.roles || {};
+    task.team = {
+      dir: repo.path, branch: null, inplace: true, messages: [], changed: 0,
+      roles: {
+        claude: String(r.claude || '').trim() || 'Backend: server logic, APIs, data layer, tests for them',
+        codex: String(r.codex || '').trim() || 'Frontend: UI, components, styling, client-side logic',
+      },
+    };
+    for (const run of task.runs) run.dir = repo.path;
+    return;
+  }
   const branch = `duo/${task.id}-team`;
   const dir = path.join(WORKTREES, `${task.id}-team`);
   const wt = await serial(() => git(repo.path, 'worktree', 'add', '-b', branch, dir, 'HEAD'));
@@ -392,13 +448,21 @@ async function createTask(body) {
     if (!st.loggedIn) throw httpErr(400, `${adapters[a].label} is not signed in. Use the Sign in button in the sidebar first.`);
   }
   if (!String(body.repo || '').trim()) throw httpErr(400, 'Choose a project folder first');
-  const repo = await ensureRepo(await repoInfo(body.repo), body.initGit === true);
+  const inplace = body.workspace === 'folder';
+  if (inplace && body.kind !== 'team' && agents.length > 1) {
+    throw httpErr(400, 'Working in a folder lets one agent edit it directly. Pick a single agent, or use Team mode so both share the folder.');
+  }
+  const repo = inplace ? await folderInfo(body.repo) : await ensureRepo(await repoInfo(body.repo), body.initGit === true);
   const isTeam = body.kind === 'team';
   const task = {
-    id: newId(), prompt, repo: repo.path, remote: repo.remote, fresh: !!repo.fresh, ci: isTeam || body.mode !== 'review' ? ci.ciSection(repo.path) : '', mode: isTeam || body.mode !== 'review' ? 'build' : 'review',
+    id: newId(), prompt, repo: repo.path, remote: inplace ? null : repo.remote, fresh: !!repo.fresh, inplace, ci: isTeam || body.mode !== 'review' ? ci.ciSection(repo.path) : '', mode: isTeam || body.mode !== 'review' ? 'build' : 'review',
     models: cleanModels(body.models), createdAt: Date.now(), baseBranch: repo.branch,
     runs: agents.map((agent) => ({ agent, status: 'queued', items: [], cursor: 0 })),
   };
+  if (inplace) {
+    const snap = await shadow.snapshot(shadowOf(task), repo.path);
+    if (!snap.ok) throw httpErr(500, `Could not take a snapshot of ${repo.path}: ${snap.error}`);
+  }
   if (isTeam) await createTeamTask(task, repo, body);
   tasks.set(task.id, task);
   save();
@@ -414,7 +478,8 @@ function findRun(taskId, agent) {
   return { task, run };
 }
 
-async function diffOf(run) {
+async function diffOf(run, task) {
+  if (task && task.inplace) return shadow.diff(shadowOf(task), folderOf(task));
   if (!run.dir || !fs.existsSync(run.dir)) return { diff: '', stat: '' };
   await git(run.dir, 'add', '-A', '--', '.', team.EXCLUDE);
   const [diff, stat] = await Promise.all([
@@ -434,6 +499,7 @@ async function commitRun(task, run) {
 }
 
 async function prRun(task, run) {
+  if (task.inplace) throw httpErr(400, 'This task edits the folder directly, so there is no branch to merge. Use View changes or Undo.');
   await commitRun(task, run);
   const who = task.team ? 'Claude Code and Codex (team)' : adapters[run.agent].label;
   const files = (await git(run.dir, 'diff', '--stat', `${task.baseBranch}...HEAD`)).stdout.trim();
@@ -449,6 +515,7 @@ async function prRun(task, run) {
 }
 
 async function applyRun(task, run) {
+  if (task.inplace) throw httpErr(400, 'This task edits the folder directly, so there is no branch to merge. Use View changes or Undo.');
   await commitRun(task, run);
   const m = await serial(() => git(run.repoRoot, 'merge', '--no-ff', '--no-edit', run.branch));
   if (!m.ok) {
@@ -468,6 +535,7 @@ async function applyRun(task, run) {
 
 async function discardTeam(task) {
   for (const r of task.runs) killTree(procs.get(`${task.id}:${r.agent}`));
+  if (task.inplace) return;
   const r = task.runs[0];
   await serial(async () => {
     await git(r.repoRoot, 'worktree', 'remove', '--force', task.team.dir);
@@ -480,6 +548,7 @@ async function discardTeam(task) {
 
 async function discardRun(task, run) {
   killTree(procs.get(`${task.id}:${run.agent}`));
+  if (task.inplace) return;
   if (run.dir) {
     await serial(async () => {
       await git(run.repoRoot, 'worktree', 'remove', '--force', run.dir);
@@ -555,9 +624,27 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && p === '/api/github/repos') return json(res, 200, await gh.listRepos(url.searchParams.get('dir')));
     if (req.method === 'POST' && p === '/api/projects/clone') { const b = await readBody(req); return json(res, 200, await gh.cloneRepo(b.repo, b.dir)); }
     if (req.method === 'POST' && p === '/api/projects/create') return json(res, 200, await gh.createProject(await readBody(req)));
+    if (req.method === 'POST' && p === '/api/pick-folder') {
+      if (process.platform !== 'darwin') throw httpErr(400, 'The folder picker is only available on macOS. Type the path instead.');
+      const r = await run('osascript', ['-e', 'POSIX path of (choose folder with prompt "Choose the folder Duo should work in")'], { timeout: 600000 });
+      if (!r.ok) return json(res, 200, { path: null }); // cancelled
+      return json(res, 200, { path: r.stdout.trim().replace(/\/$/, '') || null });
+    }
+    if (req.method === 'POST' && (m = p.match(/^\/api\/tasks\/([a-f0-9]+)\/undo$/))) {
+      const task = tasks.get(m[1]);
+      if (!task) throw httpErr(404, 'Not found');
+      if (!task.inplace) throw httpErr(400, 'Only tasks that edit a folder directly can be undone this way.');
+      if (task.runs.some((r) => r.status === 'running')) throw httpErr(409, 'Stop the agents first, then undo.');
+      try { await shadow.undo(shadowOf(task), folderOf(task)); } catch (e) { throw httpErr(500, e.message); }
+      for (const r of task.runs) setStatus(task, r, r.status, { changed: 0 });
+      if (task.team) { task.team.changed = 0; broadcast({ type: 'team', taskId: task.id, team: { changed: 0 } }); }
+      save();
+      return json(res, 200, { ok: true });
+    }
     if (req.method === 'POST' && (m = p.match(/^\/api\/tasks\/([a-f0-9]+)\/push$/))) {
       const task = tasks.get(m[1]);
       if (!task) throw httpErr(404, 'Not found');
+      if (task.inplace) throw httpErr(400, 'This task edits the folder directly, so there is no branch to merge. Use View changes or Undo.');
       await gh.pushBranch(task.runs[0].repoRoot, task.baseBranch);
       return json(res, 200, { ok: true });
     }
@@ -603,7 +690,7 @@ const server = http.createServer(async (req, res) => {
       if (m[2] === 'team') {
         const task = tasks.get(m[1]);
         if (!task || !task.team) throw httpErr(404, 'Not found');
-        if (m[3] === 'diff' && req.method === 'GET') return json(res, 200, task.team.discarded ? { diff: '', stat: '' } : await diffOf(task.runs[0]));
+        if (m[3] === 'diff' && req.method === 'GET') return json(res, 200, task.team.discarded ? { diff: '', stat: '' } : await diffOf(task.runs[0], task));
         if (req.method !== 'POST') throw httpErr(405, 'Method not allowed');
         if (m[3] === 'apply') { await applyRun(task, task.runs[0]); return json(res, 200, { ok: true }); }
         if (m[3] === 'pr') return json(res, 200, { url: await prRun(task, task.runs[0]) });
@@ -611,7 +698,7 @@ const server = http.createServer(async (req, res) => {
         throw httpErr(404, 'Not found');
       }
       const { task, run: r } = findRun(m[1], m[2]);
-      if (m[3] === 'diff' && req.method === 'GET') return json(res, 200, await diffOf(r));
+      if (m[3] === 'diff' && req.method === 'GET') return json(res, 200, await diffOf(r, task));
       if (req.method !== 'POST') throw httpErr(405, 'Method not allowed');
       if (m[3] === 'cancel') {
         const child = procs.get(`${task.id}:${r.agent}`);
@@ -626,7 +713,11 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'DELETE' && (m = p.match(/^\/api\/tasks\/([a-f0-9]+)$/))) {
       const task = tasks.get(m[1]);
       if (!task) throw httpErr(404, 'Not found');
-      if (task.team) { if (!task.team.discarded) await discardTeam(task); }
+      if (task.inplace) {
+        for (const r of task.runs) killTree(procs.get(`${task.id}:${r.agent}`));
+        shadow.remove(shadowOf(task));
+        if (task.team) fs.rmSync(path.join(task.team.dir, '.duo'), { recursive: true, force: true });
+      } else if (task.team) { if (!task.team.discarded) await discardTeam(task); }
       else for (const r of task.runs) if (!r.discarded) await discardRun(task, r);
       tasks.delete(task.id);
       save();

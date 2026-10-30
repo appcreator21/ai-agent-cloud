@@ -340,3 +340,59 @@ test('sign-in helper: Terminal opener is macOS-only and validates the agent', as
   if (process.platform !== 'darwin') assert.equal((await post('/api/login/claude/terminal')).status, 400);
   assert.equal((await post('/api/login/evil/terminal')).status, 404);
 });
+
+test('in place: any folder, git or not, edited directly with a diff and an undo', async () => {
+  // plain folder, no git
+  const dir = path.join(tmp, 'plain'); fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'a.txt'), 'one\n');
+  let r = await post('/api/tasks', { prompt: 'edit in place', repo: dir, agents: ['claude'], workspace: 'folder' });
+  assert.equal(r.status, 200);
+  let t = await r.json(); assert.equal(t.inplace, true);
+  t = await waitFor(async () => { const x = await taskById(t.id); return idle(x) && x; }, 15000, 'in place done');
+  assert.ok(fs.existsSync(path.join(dir, 'hello.txt')), 'agent wrote straight into the folder');
+  assert.ok(!fs.existsSync(path.join(dir, '.git')), 'no git repo was created in the user folder');
+  assert.ok(t.runs[0].changed >= 1);
+  const d = await get(`/api/tasks/${t.id}/claude/diff`);
+  assert.match(d.diff, /hello\.txt/);
+  for (const act of ['claude/apply', 'claude/pr', 'push']) assert.equal((await post(`/api/tasks/${t.id}/${act}`)).status, 400, act);
+  fs.writeFileSync(path.join(dir, 'a.txt'), 'one\nedited by agent\n');
+  assert.equal((await post(`/api/tasks/${t.id}/undo`)).status, 200);
+  assert.ok(!fs.existsSync(path.join(dir, 'hello.txt')), 'undo removes files the agent created');
+  assert.equal(fs.readFileSync(path.join(dir, 'a.txt'), 'utf8'), 'one\n', 'undo restores edited files');
+  assert.equal((await taskById(t.id)).runs[0].changed, 0);
+
+  // existing git repo: edits land uncommitted in the real repo, no branches or worktrees
+  freshRepo();
+  const head = sh(repo, 'rev-parse', 'HEAD');
+  r = await post('/api/tasks', { prompt: 'edit the repo', repo, agents: ['codex'], workspace: 'folder' });
+  assert.equal(r.status, 200); t = await r.json();
+  await waitFor(async () => idle(await taskById(t.id)), 15000, 'git in place done');
+  assert.match(sh(repo, 'status', '--porcelain'), /hello\.txt/);
+  assert.equal(sh(repo, 'rev-parse', 'HEAD'), head, 'no commit was made');
+  assert.equal(sh(repo, 'branch').trim(), '* main', 'no extra branches');
+  assert.equal(sh(repo, 'worktree', 'list').trim().split('\n').length, 1, 'no worktrees');
+
+  // guards
+  assert.equal((await post('/api/tasks', { prompt: 'x', repo, agents: ['claude', 'codex'], workspace: 'folder' })).status, 400, 'two agents cannot edit one folder in compete mode');
+  assert.equal((await post('/api/tasks', { prompt: 'x', repo: os.homedir(), agents: ['claude'], workspace: 'folder' })).status, 400, 'home folder is too broad');
+  assert.equal((await post('/api/tasks', { prompt: 'x', repo: path.join(os.homedir(), 'Documents'), agents: ['claude'], workspace: 'folder' })).status, 400);
+  assert.equal((await post('/api/tasks', { prompt: 'x', repo: path.join(repo, 'README.md'), agents: ['claude'], workspace: 'folder' })).status, 400, 'a file is not a folder');
+});
+
+test('in place team: both agents share the folder, mailbox stays out of git, delete cleans up', async () => {
+  freshRepo();
+  const r = await post('/api/tasks', { kind: 'team', prompt: 'team in place', repo, workspace: 'folder', roles: { claude: 'A', codex: 'B' } });
+  assert.equal(r.status, 200);
+  const { id } = await r.json();
+  const t = await waitFor(async () => { const x = await taskById(id); return idle(x) && x.team.messages.length >= 2 && x; }, 25000, 'in place team');
+  assert.ok(fs.existsSync(path.join(repo, '.duo', 'messages.jsonl')));
+  assert.ok(fs.existsSync(path.join(repo, 'server', 'todos.js')) && fs.existsSync(path.join(repo, 'web', 'index.html')));
+  assert.doesNotMatch(sh(repo, 'status', '--porcelain'), /\.duo/, 'mailbox is excluded from git status');
+  const d = await get(`/api/tasks/${id}/team/diff`);
+  assert.match(d.diff, /todos\.js/); assert.doesNotMatch(d.diff, /\.duo/);
+  assert.ok(t.team.inplace);
+  assert.equal((await post(`/api/tasks/${id}/team/apply`)).status, 400);
+  await fetch(`${BASE}/api/tasks/${id}`, { method: 'DELETE' });
+  assert.ok(!fs.existsSync(path.join(repo, '.duo')), 'mailbox removed');
+  assert.ok(fs.existsSync(path.join(repo, 'server', 'todos.js')), 'the work stays');
+});

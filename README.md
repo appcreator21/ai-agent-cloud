@@ -43,6 +43,18 @@ agents can still miss something, so keep CI on pull requests as the safety net.
 The **Models** button in the composer sets the model for each agent (Claude Code: Default, Opus, Sonnet, Haiku, or any model id; Codex: Default or any model id).
 Default means "whatever the CLI is already set to". The choice is remembered, passed to the CLI as `--model` / `-m`, and shown on each lane.
 
+## Branch or Folder
+
+The **Branch / Folder** switch next to the project field decides where the agents work.
+
+- **Branch** (default for git projects): each agent works on its own git branch in a hidden copy. You review, then Apply or open a PR.
+- **Folder**: the agents edit the chosen folder directly. It works with any folder, git or not, and you can point it at a brand new one (it is created). On a Mac, the folder icon opens a native folder picker.
+
+Folder mode has no Apply step because the changes are already there. Instead Duo takes a private snapshot first (kept outside your folder; it never adds a `.git` to a plain folder
+and never touches an existing repo's history, index or branches). **View changes** shows a diff against that snapshot and **Undo changes** puts the folder back, deleting files the agents created.
+`node_modules`, `.venv`, `.DS_Store` and similar are left out of the snapshot. Compete mode in a folder runs one agent (two would collide); Team mode lets both share the folder.
+Duo refuses folders that are too broad, such as your home folder, Desktop, Documents or Downloads themselves.
+
 ## Focus and full screen
 
 Every pane (each agent and the channel) has an expand button. Click it and that pane fills the screen as a comfortable reading column,

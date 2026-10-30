@@ -9,6 +9,7 @@ const state = {
   mode: store('mode') || 'build',
   kind: store('kind') || 'compete',
   focus: null, immersive: false, unread: 0,
+  workspace: store('workspace') || 'branch',
   models: store('models') || { claude: '', codex: '' },
   tab: {}, // `${taskId}:${agent}` -> 'activity' | 'changes'
 };
@@ -126,7 +127,7 @@ function renderTop() {
   const top = $('#topbar');
   if (!t) { top.innerHTML = ''; return; }
   top.innerHTML = `<h1 class="prompt-full" title="${esc(t.prompt)}">${esc(t.prompt)}</h1>
-    <div class="sub"><span>${esc(t.repo)}</span><span>from ${esc(t.baseBranch)}</span>${t.fresh ? '<span>new project</span>' : ''}${t.ci ? '<span title="The agents were told to run this repo\'s CI checks before finishing">runs CI checks</span>' : ''}<span>${t.team ? 'team - shared branch' : t.mode === 'review' ? 'plan (read-only)' : 'build'}</span><span>${ago(t.createdAt)}</span>
+    <div class="sub"><span>${esc(t.repo)}</span>${t.inplace ? '<span title="The agents edit this folder directly. Duo kept a snapshot so you can see and undo the changes.">edits in place</span>' : `<span>from ${esc(t.baseBranch)}</span>`}${t.fresh ? '<span>new project</span>' : ''}${t.ci ? '<span title="The agents were told to run this repo\'s CI checks before finishing">runs CI checks</span>' : ''}<span>${t.team ? (t.inplace ? 'team - shared folder' : 'team - shared branch') : t.mode === 'review' ? 'plan (read-only)' : 'build'}</span><span>${ago(t.createdAt)}</span>
     <span class="grow"></span><button class="mini" id="rerun" title="Load this task back into the composer">Run again</button><button class="mini" id="delTask">Delete</button></div>${compareHtml(t)}`;
   $('#rerun').onclick = () => rerun(t);
   $('#delTask').onclick = async () => {
@@ -149,6 +150,7 @@ function rerun(t) {
   if (!t.team) { state.agents = new Set(t.runs.map((r) => r.agent)); store('agents', [...state.agents]); state.mode = t.mode; store('mode', state.mode); syncMode(); }
   else { $('#roleClaude').value = t.team.roles.claude; $('#roleCodex').value = t.team.roles.codex; }
   state.models = { claude: t.models?.claude || '', codex: t.models?.codex || '' }; store('models', state.models);
+  state.workspace = t.inplace ? 'folder' : 'branch'; store('workspace', state.workspace); syncWs(false);
   $('#repo').value = t.repo; checkRepo(); syncKind(); syncModelLabel();
   state.sel = null; renderList(); renderTop(); renderStage();
   $('#prompt').value = t.prompt; autosize(); $('#prompt').focus();
@@ -242,6 +244,11 @@ function syncHead(t, r, el = laneEl(t, r)) {
   } else if (r.status === 'running' || r.status === 'queued') {
     foot.insertAdjacentHTML('beforeend', '<span class="note">Working...</span>');
     add('Stop', 'danger', () => api(`/api/tasks/${t.id}/${r.agent}/cancel`, { method: 'POST' }));
+  } else if (t.inplace) {
+    const folder = t.repo.split('/').filter(Boolean).pop();
+    foot.insertAdjacentHTML('beforeend', `<span class="note">${r.changed ? `${r.changed} file${r.changed > 1 ? 's' : ''} changed` : 'No file changes'} in <code>${esc(folder)}</code>, edited directly</span>`);
+    add('View changes', '', () => { state.tab[`${t.id}:${r.agent}`] = 'changes'; syncTab(t, r); });
+    add('Undo changes', 'danger', () => undoTask(t), !r.changed);
   } else if (r.discarded) {
     foot.insertAdjacentHTML('beforeend', '<span class="note">Discarded</span>');
   } else if (r.applied) {
@@ -408,6 +415,13 @@ function syncChanFoot(t, el = chanEl(t)) {
   if (running) {
     note('Agents are working...');
     add('Stop all', 'danger', () => t.runs.filter((r) => r.status === 'running').forEach((r) => api(`/api/tasks/${t.id}/${r.agent}/cancel`, { method: 'POST' })));
+    return;
+  }
+  if (t.inplace) {
+    const folder = t.repo.split('/').filter(Boolean).pop();
+    note(`${t.team.changed ? `${t.team.changed} file${t.team.changed > 1 ? 's' : ''} changed` : 'No file changes'} in <code>${esc(folder)}</code>, edited directly`);
+    add('View changes', '', () => { state.tab[`${t.id}:team`] = 'changes'; syncChanTab(t); });
+    add('Undo all changes', 'danger', () => undoTask(t), !t.team.changed);
     return;
   }
   note(`${t.team.changed ? `${t.team.changed} file${t.team.changed > 1 ? 's' : ''} changed` : 'No file changes'} on <code>${esc(t.team.branch)}</code>`);
@@ -649,6 +663,13 @@ async function connectGithub() {
   }, 1200);
 }
 
+async function undoTask(t) {
+  const folder = t.repo.split('/').filter(Boolean).pop();
+  if (!confirm(`Put ${folder} back the way it was when this task started?\n\nEdits are reverted and files the agents created are deleted. Anything you changed in that folder since then is lost too.`)) return;
+  try { await api(`/api/tasks/${t.id}/undo`, { method: 'POST' }); toast('Folder restored.'); if (state.tab[`${t.id}:team`] === 'changes') syncChanTab(t); }
+  catch (e) { toast(e.message, true); }
+}
+
 const canGh = (t) => !!t.remote && !!state.status?.github?.loggedIn;
 async function doPr(t, key, who) {
   try {
@@ -839,8 +860,26 @@ function syncKind() {
 }
 document.querySelectorAll('.seg.kind button').forEach((b) => (b.onclick = () => { state.kind = b.dataset.kind; store('kind', state.kind); syncKind(); }));
 $('#swapRoles').onclick = () => { const a = $('#roleClaude'), b = $('#roleCodex'); [a.value, b.value] = [b.value, a.value]; };
-function syncMode() { document.querySelectorAll('.seg:not(.kind) button').forEach((b) => b.classList.toggle('on', b.dataset.mode === state.mode)); }
-document.querySelectorAll('.seg:not(.kind) button').forEach((b) => (b.onclick = () => { state.mode = b.dataset.mode; store('mode', state.mode); syncMode(); }));
+function syncWs(announce) {
+  document.querySelectorAll('.seg.ws button').forEach((b) => b.classList.toggle('on', b.dataset.ws === state.workspace));
+  if (announce && state.workspace === 'folder' && state.kind === 'compete' && state.agents.size > 1) {
+    toast('Folder mode lets one agent edit the folder directly. Turn one agent off, or switch to Team so both share it.');
+  }
+  checkRepo();
+}
+document.querySelectorAll('.seg.ws button').forEach((b) => (b.onclick = () => { state.workspace = b.dataset.ws; store('workspace', state.workspace); syncWs(true); }));
+const pick = $('#pickFolder');
+if (/Mac/.test(navigator.platform)) pick.hidden = false;
+pick.onclick = async (e) => {
+  e.preventDefault(); e.stopPropagation();
+  try {
+    toast('Choose a folder in the window that just opened.');
+    const { path } = await api('/api/pick-folder', { method: 'POST' });
+    if (path) { $('#repo').value = path; store('repo', path); checkRepo(); }
+  } catch (err) { toast(err.message, true); }
+};
+function syncMode() { document.querySelectorAll('.seg:not(.kind):not(.ws) button').forEach((b) => b.classList.toggle('on', b.dataset.mode === state.mode)); }
+document.querySelectorAll('.seg:not(.kind):not(.ws) button').forEach((b) => (b.onclick = () => { state.mode = b.dataset.mode; store('mode', state.mode); syncMode(); }));
 
 let repoTimer;
 async function checkRepo() {
@@ -851,6 +890,12 @@ async function checkRepo() {
     if (r.blocked) {
       badge.className = 'repo-badge bad'; badge.textContent = 'blocked by macOS';
       badge.title = 'Allow Duo in System Settings > Privacy & Security > Full Disk Access (add Duo.app), then quit and reopen it.';
+      return r;
+    }
+    if (state.workspace === 'folder') {
+      badge.className = 'repo-badge ok';
+      badge.textContent = !r.exists ? 'new folder' : r.git ? (r.branch || 'git') : 'no git';
+      badge.title = 'The agents edit this folder directly. Duo keeps a snapshot so you can see and undo every change.';
       return r;
     }
     badge.className = 'repo-badge ' + (r.git ? (r.dirty ? 'warn' : 'ok') : r.empty ? 'ok' : 'warn');
@@ -872,7 +917,7 @@ async function submit(e) {
   try { if (Notification.permission === 'default') Notification.requestPermission(); } catch { /* unsupported */ }
   const btn = $('#runBtn'); btn.disabled = true;
   try {
-    const body = { prompt, repo, kind: state.kind, agents: [...state.agents], mode: state.mode, roles: { claude: $('#roleClaude').value, codex: $('#roleCodex').value }, models: { ...state.models } };
+    const body = { prompt, repo, kind: state.kind, agents: [...state.agents], mode: state.mode, roles: { claude: $('#roleClaude').value, codex: $('#roleCodex').value }, models: { ...state.models }, workspace: state.workspace };
     try { await api('/api/tasks', { method: 'POST', body }); }
     catch (err) {
       if (err.code !== 'needs_init' || !confirm(`${repo} is not a git repository.\n\nSet up git there and commit its current files so the agents can work on it?`)) throw err;
@@ -952,7 +997,7 @@ setInterval(renderList, 30000);
 
 // ---------- boot ----------
 (async function boot() {
-  syncChips(); syncMode(); syncKind(); fillRecent(); syncModelLabel();
+  syncChips(); syncMode(); syncKind(); fillRecent(); syncModelLabel(); syncWs(false);
   await loadStatus();
   $('#repo').value = store('repo') || state.status?.cwd || '';
   checkRepo();

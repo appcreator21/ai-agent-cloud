@@ -757,3 +757,14 @@ body.immersive .main { animation: fadein .35s both; }
 /* narrow team lanes: buttons stay on the title row, the numbers wrap to a line of their own */
 .team-lane:not(.focused) .lane-head .pane-btns { order: 2; margin-left: auto; }
 .team-lane:not(.focused) .lane-head .lane-stats { order: 3; flex: 1 0 100%; margin-left: 0; }
+
+/* ---------- workspace: branch or folder ---------- */
+.seg.ws button.on { background: var(--glass-3); color: var(--ink); }
+.repo-pick { display: grid; place-items: center; width: 24px; height: 24px; margin-left: 2px; border-radius: 50%; background: var(--glass); border: 1px solid var(--hair); color: var(--muted); cursor: pointer; flex: none; transition: all .15s; }
+.repo-pick:hover { color: var(--ink); background: var(--glass-3); }
+.repo-pick[hidden] { display: none; }
+
+/* the composer row now holds more controls: let the path field give way instead of pushing Run down */
+.repo { flex: 1 1 150px; min-width: 130px; max-width: 360px; }
+.repo input { min-width: 48px; }
+.repo-badge { max-width: 52%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: none; }
